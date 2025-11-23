@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
-# Install deps
-RUN apt-get update && apt-get install -y wget gnupg unzip curl libglib2.0-0 libnss3 libgconf-2-4 libxss1 libasound2 xvfb
+# Install deps (removed libgconf-2-4)
+RUN apt-get update && apt-get install -y wget gnupg unzip curl libglib2.0-0 libnss3 libxss1 libasound2 xvfb
 
 # Download and install Chrome GPG key (apt-key deprecated fix)
 RUN wget -q -O /tmp/google-chrome.asc https://dl.google.com/linux/linux_signing_key.pub
