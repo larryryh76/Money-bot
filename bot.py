@@ -2,21 +2,22 @@ import time, random, requests, threading, os
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fake_useragent import UserAgent
 
-# Env vars (set in Render)
-API_KEY = os.getenv('OPENROUTER_KEY', '')  # Optional for AI answers
+# Env vars
+API_KEY = os.getenv('OPENROUTER_KEY', '')  # Optional
 WALLET = os.getenv('WALLET', '')
 
-# Free proxy list (residential, low ban – from free-proxy-list.net 2025)
+# Free proxy list
 PROXIES = [
     'http://103.153.154.170:80', 'http://190.103.177.131:4145', 'http://103.153.155.131:80', 'http://190.103.177.131:80',
     'http://103.153.154.170:4145', 'http://190.103.177.131:4145', 'http://103.153.155.131:4145', 'http://190.103.177.131:80'
 ]
 
-# Sites with exact paths (researched 2025)
+# Sites with paths (2025 verified)
 SITE_PATHS = {
     "freecash.com": {"signup": "/register", "tasks": "/offers", "withdraw": "/cashout", "min": 0.50},
     "lootably.com": {"signup": "/authentication/signup", "tasks": "/offers", "withdraw": "/withdraw", "min": 5.00},
@@ -41,7 +42,6 @@ def ai_or_random_answer(question):
     return random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
 
 def create_temp_email():
-    # Guerrilla Mail API (stable 2025)
     resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
     data = resp.json()
     return data['email_addr'], data['sid_token'], data['seq']
@@ -126,7 +126,8 @@ def run():
             options.add_argument('--disable-gpu')
             options.add_argument(f'--user-agent={ua.random}')
             if proxy: options.add_argument(f'--proxy-server={proxy}')
-            driver = webdriver.Chrome(options=options)
+            service = Service('/usr/bin/chromedriver')  # Explicit path in Selenium image
+            driver = webdriver.Chrome(service=service, options=options)
             
             site = random.choice(list(SITE_PATHS.keys()))
             print(f"→ Working on {site}")
