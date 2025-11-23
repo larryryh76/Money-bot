@@ -1,4 +1,4 @@
-import time, random, requests, threading, os
+hiimport time, random, requests, threading, os
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -143,8 +143,8 @@ def run():
         
         time.sleep(random.randint(1800, 3600))
 
-print("Starting 200 accounts...")
-for i in range(200):
+print("Starting 90 accounts...")
+for i in range(90):
     threading.Thread(target=run, daemon=True).start()
     time.sleep(10)
 
