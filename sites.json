@@ -1,0 +1,32 @@
+{
+  "freecash.com": {
+    "signup": "/register",
+    "tasks": "/offers",
+    "withdraw": "/cashout",
+    "min": 0.50
+  },
+  "lootably.com": {
+    "signup": "/authentication/signup",
+    "tasks": "/offers",
+    "withdraw": "/withdraw",
+    "min": 5.00
+  },
+  "surveytime.io": {
+    "signup": "/",
+    "tasks": "/paid-surveys",
+    "withdraw": "/rewards",
+    "min": 1.00
+  },
+  "prizerebel.com": {
+    "signup": "/",
+    "tasks": "/offers",
+    "withdraw": "/redeem",
+    "min": 5.00
+  },
+  "cointiply.com": {
+    "signup": "/",
+    "tasks": "/offers",
+    "withdraw": "/withdraw",
+    "min": 3.00
+  }
+}
