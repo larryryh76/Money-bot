@@ -46,6 +46,10 @@ For instructions on how to deploy the bot on a free cloud service, see [`deploym
 
 This bot is provided for educational purposes only. Automated bots can be against the terms of service of the survey websites you are targeting. Use at your own risk.
 
-**Security Note:** The `accounts.json` file stores account credentials in plaintext. It is recommended to run this bot in a secure environment.
+**Security Note:** The `accounts.json` file is encrypted, but the default encryption password in `config.json` is "CHANGE_THIS_PASSWORD". It is critical that you change this to a secure, unique password before running the bot.
 
 **Development Note:** The `LearningAI` and `EvolutionAI` classes currently have placeholder methods. These are intended to be expanded upon in future development. The `innovate` feature, which automatically discovers new survey sites, is also experimental and may not work reliably.
+
+**Known Limitations:**
+- **Brittle Web Selectors:** The bot relies on CSS selectors to navigate the survey websites. These selectors can break if the websites change their layout.
+- **No Phone Verification:** The bot does not currently have a way to bypass phone verification, which is a common requirement on many survey sites.

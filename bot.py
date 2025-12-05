@@ -1,4 +1,4 @@
-import time, random, requests, threading, os
+import time, random, requests, threading, os, re
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -6,8 +6,10 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fake_useragent import UserAgent
-from ai_manager import OperationsAI, EvolutionAI
+from ai_manager import OperationsAI, EvolutionAI, ENCRYPTION_PASSWORD
 from proxy_manager import ProxyManager
+from secure_storage import load_accounts_encrypted, save_accounts_encrypted
+from captcha_solver import solve_captcha
 
 import json
 
@@ -21,6 +23,7 @@ THREADS = config.get("threads", 90)
 THREAD_DELAY = config.get("thread_delay", 10)
 CASHOUT_CHECK_INTERVAL = config.get("cashout_check_interval", 3600)
 CHROMEDRIVER_PATH = config.get("chromedriver_path", "/usr/bin/chromedriver")
+TWOCAPTCHA_API_KEY = config.get("2captcha_api_key", "REPLACE_WITH_YOUR_2CAPTCHA_API_KEY")
 
 # Load sites
 with open("sites.json") as f:
@@ -33,13 +36,14 @@ proxy_manager.test_proxies()
 def get_proxy():
     return proxy_manager.get_proxy()
 
-def ai_or_random_answer(question, context="", options=None):
+def ai_or_random_answer(question, context="", options=None, profile=None):
     if API_KEY:
         try:
+            profile_str = json.dumps(profile) if profile else ""
             if options:
-                prompt = f"Context: {context}\n\nQuestion: {question}\n\nOptions: {', '.join(options)}\n\nSelect the best option."
+                prompt = f"Profile: {profile_str}\n\nContext: {context}\n\nQuestion: {question}\n\nOptions: {', '.join(options)}\n\nSelect the best option based on the profile."
             else:
-                prompt = f"Context: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words as a random adult."
+                prompt = f"Profile: {profile_str}\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words based on the profile."
 
             resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
                                  headers={"Authorization": f"Bearer {API_KEY}"},
@@ -70,16 +74,13 @@ def fetch_email_code(sid_token, seq):
         return code
     return str(random.randint(100000, 999999))
 
-def load_accounts():
+
+def load_profiles():
     try:
-        with open("accounts.json", "r") as f:
+        with open("profiles.json", "r") as f:
             return json.load(f)
     except FileNotFoundError:
         return []
-
-def save_accounts(accounts):
-    with open("accounts.json", "w") as f:
-        json.dump(accounts, f, indent=2)
 
 def write_log(log_entry):
     try:
@@ -97,10 +98,12 @@ class Bot:
         self.last_cashout_check = {}
         self.operations_ai = OperationsAI()
         self.evolution_ai = EvolutionAI()
-        self.task_queue = self.operations_ai.manage_tasks()
+        self.profiles = load_profiles()
+        self.task_queue = []
 
     def auto_signup(self, driver, site):
-        accounts = load_accounts()
+        accounts = load_accounts_encrypted(ENCRYPTION_PASSWORD)
+        profiles = load_profiles()
 
         # Try to find an existing account for the site
         for account in accounts:
@@ -110,12 +113,35 @@ class Bot:
                     if "login" in paths:
                         driver.get(f"https://{site}{paths['login']}")
                         wait = WebDriverWait(driver, 15)
-                        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
-                        driver.find_element(By.CSS_SELECTOR, "input[type='email']").send_keys(account["email"])
-                        driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys(account["password"])
-                        driver.find_element(By.XPATH, "//button[contains(text(),'Login')]").click()
+
+                        # Try different selectors for email and password fields
+                        email_selectors = ["input[type='email']", "input[name='email']", "input[id='email']"]
+                        password_selectors = ["input[type='password']", "input[name='password']", "input[id='password']"]
+
+                        for email_selector in email_selectors:
+                            try:
+                                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, email_selector)))
+                                driver.find_element(By.CSS_SELECTOR, email_selector).send_keys(account["email"])
+                                break
+                            except:
+                                pass
+
+                        for password_selector in password_selectors:
+                            try:
+                                driver.find_element(By.CSS_SELECTOR, password_selector).send_keys(account["password"])
+                                break
+                            except:
+                                pass
+
+                        driver.find_element(By.XPATH, "//button[contains(text(),'Login') or contains(text(), 'Sign In')]").click()
                         time.sleep(5)
-                        return True
+
+                        # Check for successful login
+                        try:
+                            driver.find_element(By.XPATH, "//*[contains(text(),'Logout') or contains(text(), 'Sign Out')]")
+                            return True
+                        except:
+                            return False
                 except Exception as e:
                     print(f"Login fail {site}: {e}")
                     return False
@@ -129,34 +155,62 @@ class Bot:
             email, sid_token, seq = create_temp_email()
             password = "TempPass123!"
             username = f"User{random.randint(1000,9999)}"
+            profile = random.choice(profiles)
 
             driver.find_element(By.CSS_SELECTOR, "input[type='email']").send_keys(email)
             driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys(password)
             driver.find_element(By.CSS_SELECTOR, "input[name*='name']").send_keys(username)
+
+            # Check for CAPTCHA
+            try:
+                captcha = driver.find_element(By.CLASS_NAME, "g-recaptcha")
+                site_key = captcha.get_attribute("data-sitekey")
+                solution = solve_captcha(TWOCAPTCHA_API_KEY, site_key, driver.current_url)
+                if solution:
+                    driver.execute_script(f"document.getElementById('g-recaptcha-response').innerHTML='{solution}';")
+            except:
+                pass
+
             driver.find_element(By.XPATH, "//button[contains(text(),'Sign Up')]").click()
             time.sleep(5)
             if "verify" in driver.page_source.lower():
                 code = fetch_email_code(sid_token, seq)
                 driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(code)
                 driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
-            
-            accounts.append({"site": site, "email": email, "password": password, "username": username})
-            save_accounts(accounts)
+
+            accounts.append({"site": site, "email": email, "password": password, "username": username, "profile": profile, "status": "active"})
+            save_accounts_encrypted(accounts, ENCRYPTION_PASSWORD)
             print(f"Account created on {site}: {email}")
             return True
         except Exception as e:
             print(f"Signup fail {site}: {e}")
             return False
 
-    def do_tasks(self, driver, site):
+    def do_tasks(self, driver, task, profile):
+        site = task["site"]
         paths = SITE_PATHS[site]
         tasks = 0
         retries = 3
         driver.get(f"https://{site}{paths['tasks']}")
+        self.reading_time(driver)
         time.sleep(10)
         for _ in range(5):
             success = False
             try:
+                if self.detect_honeypots(driver):
+                    print(f"Honeypot detected on {site}, aborting task.")
+                    break
+
+                # Click on the offer
+                offers = self.find_offers(driver)
+                if not offers:
+                    break
+
+                offer_to_do = random.choice(offers)
+                offer_to_do["element"].click()
+
+                self.reading_time(driver)
+
                 question_element = driver.find_element(By.CSS_SELECTOR, "label, span, p, h1, h2, h3")
                 question_text = question_element.text
                 if question_text:
@@ -166,7 +220,7 @@ class Bot:
                     try:
                         # Text input
                         input_field = question_element.find_element(By.XPATH, "./following::input[@type='text'] | ./following::textarea")
-                        answer = ai_or_random_answer(question_text, context)
+                        answer = ai_or_random_answer(question_text, context, profile=profile)
                         input_field.send_keys(answer)
                         success = True
                     except:
@@ -174,7 +228,7 @@ class Bot:
                             # Multiple choice
                             option_elements = question_element.find_elements(By.XPATH, "./following::input[@type='radio'] | ./following::input[@type='checkbox']")
                             option_labels = [opt.find_element(By.XPATH, "./following-sibling::label").text for opt in option_elements]
-                            answer = ai_or_random_answer(question_text, context, options=option_labels)
+                            answer = ai_or_random_answer(question_text, context, options=option_labels, profile=profile)
                             for opt in option_elements:
                                 if opt.find_element(By.XPATH, "./following-sibling::label").text == answer:
                                     opt.click()
@@ -186,7 +240,7 @@ class Bot:
                                 select = question_element.find_element(By.XPATH, "./following::select")
                                 option_elements = select.find_elements(By.TAG_NAME, "option")
                                 option_labels = [opt.text for opt in option_elements]
-                                answer = ai_or_random_answer(question_text, context, options=option_labels)
+                                answer = ai_or_random_answer(question_text, context, options=option_labels, profile=profile)
                                 for opt in option_elements:
                                     if opt.text == answer:
                                         opt.click()
@@ -207,10 +261,10 @@ class Bot:
                 if retries == 0:
                     break
 
-            write_log({"site": site, "timestamp": time.time(), "success": success})
+            write_log({"site": site, "timestamp": time.time(), "success": success, "profile": profile})
 
         return tasks
-        
+
     def auto_payout(self, driver, site):
         paths = SITE_PATHS[site]
         min_bal = paths['min']
@@ -231,18 +285,70 @@ class Bot:
             print(f"Payout error {site}: {e}")
         return False
 
+    def find_offers(self, driver):
+        offers = []
+        offer_elements = driver.find_elements(By.XPATH, "//*[contains(text(), '$')]")
+        for offer_element in offer_elements:
+            offer_text = offer_element.text
+            try:
+                value = float(re.search(r'\$(\d+\.\d+)', offer_text).group(1))
+                time_match = re.search(r'(\d+)\s*min', offer_text)
+                time_to_complete = int(time_match.group(1)) if time_match else 10 # default to 10 mins
+                offers.append({"id": offer_element.id, "site": driver.current_url.split("/")[2].replace("www.", ""), "value": value, "time_to_complete": time_to_complete, "element": offer_element})
+            except:
+                pass
+        return offers
+
+    def detect_honeypots(self, driver):
+        try:
+            # Check for invisible links
+            invisible_links = driver.find_elements(By.XPATH, "//a[contains(@style,'display:none') or contains(@style,'visibility:hidden')]")
+            if invisible_links:
+                return True
+            # Check for form fields that are not visible
+            invisible_inputs = driver.find_elements(By.XPATH, "//input[@type='text' and (contains(@style,'display:none') or contains(@style,'visibility:hidden'))]")
+            if invisible_inputs:
+                return True
+        except:
+            pass
+        return False
+
     def run(self):
-        consecutive_failures = {}
         while True:
             try:
                 if not self.task_queue:
-                    self.task_queue = self.operations_ai.manage_tasks()
+                    # Find offers on all sites
+                    all_offers = []
+                    for site in SITE_PATHS.keys():
+                        try:
+                            proxy = get_proxy()
+                            ua = UserAgent()
+                            options = Options()
+                            options.add_argument('--headless')
+                            options.add_argument('--no-sandbox')
+                            options.add_argument('--disable-dev-shm-usage')
+                            options.add_argument('--disable-gpu')
+                            options.add_argument(f'--user-agent={ua.random}')
+                            if proxy: options.add_argument(f'--proxy-server={proxy}')
+                            service = Service(CHROMEDRIVER_PATH)
+                            driver = webdriver.Chrome(service=service, options=options)
+                            driver.get(f"https://{site}{SITE_PATHS[site]['tasks']}")
+                            all_offers.extend(self.find_offers(driver))
+                            driver.quit()
+                        except:
+                            pass
+                    self.task_queue = self.operations_ai.manage_tasks(self.profiles, all_offers)
 
                 if not self.task_queue:
                     time.sleep(60)
                     continue
 
-                site = self.task_queue.pop(0)
+                task = self.task_queue.pop(0)
+                site = task["site"]
+                account = next((acc for acc in load_accounts_encrypted(ENCRYPTION_PASSWORD) if acc["site"] == site and acc["status"] == "active"), None)
+
+                if not account:
+                    continue
 
                 proxy = get_proxy()
                 ua = UserAgent()
@@ -259,29 +365,45 @@ class Bot:
                 service = Service(CHROMEDRIVER_PATH)
                 driver = webdriver.Chrome(service=service, options=options)
 
-                print(f"→ Working on {site}")
+                print(f"→ Working on {site} with account {account['email']}")
 
                 if self.auto_signup(driver, site):
-                    tasks = self.do_tasks(driver, site)
+                    tasks = self.do_tasks(driver, task, account["profile"])
                     print(f"Completed {tasks} tasks on {site}")
 
                     if site not in self.last_cashout_check or time.time() - self.last_cashout_check[site] > CASHOUT_CHECK_INTERVAL:
                         self.auto_payout(driver, site)
                         self.last_cashout_check[site] = time.time()
 
-                    consecutive_failures[site] = 0
+                    account["status"] = "active" # Reset status after successful task
                 else:
-                    if site not in consecutive_failures:
-                        consecutive_failures[site] = 0
-                    consecutive_failures[site] += 1
-                    if consecutive_failures[site] >= 3:
-                        self.operations_ai.cooldown_sites[site] = time.time()
+                    account["status"] = "flagged"
+                    self.operations_ai.cooldown_sites[site] = time.time()
+
+                accounts = load_accounts_encrypted(ENCRYPTION_PASSWORD)
+                for i, acc in enumerate(accounts):
+                    if acc["email"] == account["email"] and acc["site"] == site:
+                        accounts[i] = account
+                        break
+                save_accounts_encrypted(accounts, ENCRYPTION_PASSWORD)
 
                 driver.quit()
+            except (requests.exceptions.RequestException, webdriver.exceptions.WebDriverException) as e:
+                print(f"Recoverable error: {e}")
+                time.sleep(60) # Wait a minute before retrying
             except Exception as e:
-                print("Error:", e)
+                print(f"Unhandled error: {e}")
+                # Log the error for later analysis
+                with open("error.log", "a") as f:
+                    f.write(f"{time.time()}: {e}\n")
 
             time.sleep(random.randint(1800, 3600))
+
+    def reading_time(self, driver):
+        text = driver.find_element(By.TAG_NAME, "body").text
+        word_count = len(text.split())
+        delay = word_count / 200 # Average reading speed is 200 wpm
+        time.sleep(delay)
 
     def integrate_new_sites(self):
         new_sites = self.evolution_ai.innovate()
@@ -303,17 +425,23 @@ class Bot:
                     driver = webdriver.Chrome(service=service, options=options)
 
                     if self.auto_signup(driver, site):
-                        if self.do_tasks(driver, site) > 0:
-                            print(f"Successfully integrated new site: {site}")
-                            SITE_PATHS[site] = {"signup": "/register", "tasks": "/offers", "withdraw": "/cashout", "min": 0.50} # Default paths
-                            with open("sites.json", "w") as f:
-                                json.dump(SITE_PATHS, f, indent=2)
+                        print(f"Successfully integrated new site: {site}")
+                        SITE_PATHS[site] = {"signup": "/register", "tasks": "/offers", "withdraw": "/cashout", "min": 0.50} # Default paths
+                        with open("sites.json", "w") as f:
+                            json.dump(SITE_PATHS, f, indent=2)
                     driver.quit()
                 except Exception as e:
                     print(f"Failed to integrate new site {site}: {e}")
 
     def start(self):
-        self.evolution_ai.improve_self()
+        site_performance, profile_performance = self.operations_ai.learning_ai.analyze_logs()
+        recommendations = self.evolution_ai.optimize(site_performance, profile_performance)
+        if recommendations:
+            print("Optimization Recommendations:")
+            for rec in recommendations:
+                print(f"- {rec}")
+
+        self.evolution_ai.improve_self(site_performance)
         self.integrate_new_sites()
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):

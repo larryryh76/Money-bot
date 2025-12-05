@@ -4,5 +4,7 @@
   "threads": 90,
   "thread_delay": 10,
   "cashout_check_interval": 3600,
-  "chromedriver_path": "/usr/bin/chromedriver"
+  "chromedriver_path": "/usr/bin/chromedriver",
+  "encryption_password": "CHANGE_THIS_PASSWORD",
+  "2captcha_api_key": "REPLACE_WITH_YOUR_2CAPTCHA_API_KEY"
 }
