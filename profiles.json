@@ -1,0 +1,20 @@
+[
+  {
+    "age": 35,
+    "income": 75000,
+    "gender": "Male",
+    "location": "New York, NY"
+  },
+  {
+    "age": 42,
+    "income": 90000,
+    "gender": "Female",
+    "location": "Los Angeles, CA"
+  },
+  {
+    "age": 28,
+    "income": 55000,
+    "gender": "Male",
+    "location": "Chicago, IL"
+  }
+]
