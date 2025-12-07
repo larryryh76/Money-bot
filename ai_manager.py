@@ -4,6 +4,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from secure_storage import load_accounts_encrypted
+from file_lock import FileLock
 
 with open("config.json") as f:
     config = json.load(f)
@@ -110,10 +111,30 @@ class LearningAI:
 
     def adapt_strategies(self, profile_performance):
         # Find the most successful profile
-        best_profile = max(profile_performance, key=lambda p: profile_performance[p]["success"] / (profile_performance[p]["success"] + profile_performance[p]["failure"] + 1))
+        best_profile_str = max(profile_performance, key=lambda p: profile_performance[p]["success"] / (profile_performance[p]["success"] + profile_performance[p]["failure"] + 1))
 
-        # For now, just return the best profile. In the future, this could be used to generate new profiles.
-        return json.loads(best_profile)
+        prompt = f"Given the most successful demographic profile for a survey bot: {best_profile_str}, generate a new, similar but distinct profile. The new profile should be a JSON object with the same keys. Respond with only the JSON object."
+
+        try:
+            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                                 headers={"Authorization": f"Bearer {config.get('api_key')}"},
+                                 json={"model": "deepseek/deepseek-r1:free",
+                                       "messages": [{"role": "user", "content": prompt}],
+                                       "max_tokens": 200}).json()
+            new_profile_str = resp['choices'][0]['message']['content'].strip()
+            new_profile = json.loads(new_profile_str)
+
+            # Save the new profile
+            with FileLock("profiles.json") as f:
+                profiles = json.load(f)
+                profiles.append(new_profile)
+                f.seek(0)
+                json.dump(profiles, f, indent=2)
+
+            return new_profile
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            print(f"Error generating new profile: {e}")
+            return json.loads(best_profile_str)
 
     def analyze_market(self):
         # This is a placeholder for a more complex market analysis
@@ -127,8 +148,10 @@ def load_parameters():
         return {"action_delay": 1.0}
 
 def save_parameters(parameters):
-    with open("parameters.json", "w") as f:
+    with FileLock("parameters.json") as f:
+        f.seek(0)
         json.dump(parameters, f, indent=2)
+        f.truncate()
 
 class EvolutionAI:
     def __init__(self):
@@ -148,35 +171,46 @@ class EvolutionAI:
         save_parameters(self.parameters)
 
     def innovate(self):
-        # Scrape for new survey sites
+        # Use Google Search to find new survey sites
         try:
-            response = requests.get("https://www.sidehustlenation.com/best-online-survey-websites/")
-            soup = BeautifulSoup(response.text, "html.parser")
+            search_results = google_search(query="best online survey sites 2024")
             new_sites = []
-            for h3 in soup.find_all("h3"):
-                a = h3.find("a")
-                if a and a.has_attr("href") and "go" in a["href"]:
-                    # Extract the domain name from the href
-                    domain = a["href"].split("/")[2].replace("www.", "")
+            for result in search_results:
+                # A simple heuristic to identify potential survey sites
+                if "survey" in result["title"].lower() or "paid" in result["title"].lower():
+                    domain = result["link"].split("/")[2].replace("www.", "")
                     new_sites.append(domain)
-            return new_sites
-        except requests.exceptions.RequestException as e:
-            print(f"Error scraping for new sites: {e}")
+            return list(set(new_sites)) # Return unique sites
+        except Exception as e:
+            print(f"Error using Google Search for site discovery: {e}")
             return []
 
     def optimize(self, site_performance, profile_performance):
-        # Recommend changes to system parameters
-        recommendations = []
+        # Autonomously apply changes to system parameters
 
-        # Recommend removing sites with low success rates
-        for site, performance in site_performance.items():
-            if performance["success"] < 10 and performance["failure"] > 20:
-                recommendations.append(f"Remove site {site} due to low success rate.")
+        # Disable sites with low success rates
+        with FileLock("sites.json") as f:
+            sites = json.load(f)
+            updated_sites = sites.copy()
+            for site, performance in site_performance.items():
+                if performance["success"] < 10 and performance["failure"] > 20:
+                    if site in updated_sites:
+                        del updated_sites[site]
+                        print(f"EvolutionAI: Autonomously disabled site {site} due to low performance.")
+            f.seek(0)
+            json.dump(updated_sites, f, indent=2)
+            f.truncate()
 
-        # Recommend adding more profiles if the success rate is low
+        # Adjust parameters based on overall performance
         total_success = sum([profile_performance[p]["success"] for p in profile_performance])
         total_failure = sum([profile_performance[p]["failure"] for p in profile_performance])
-        if total_success / (total_success + total_failure + 1) < 0.5:
-            recommendations.append("Add more diverse profiles to improve qualification rates.")
+        success_rate = total_success / (total_success + total_failure + 1)
 
-        return recommendations
+        parameters = load_parameters()
+        if success_rate < 0.5:
+            parameters["action_delay"] *= 1.05 # Slow down if overall performance is poor
+            print(f"EvolutionAI: Decreased action speed due to low success rate.")
+        else:
+            parameters["action_delay"] *= 0.95 # Speed up if overall performance is good
+            print(f"EvolutionAI: Increased action speed due to high success rate.")
+        save_parameters(parameters)

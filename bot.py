@@ -10,8 +10,21 @@ from ai_manager import OperationsAI, EvolutionAI, ENCRYPTION_PASSWORD
 from proxy_manager import ProxyManager
 from secure_storage import load_accounts_encrypted, save_accounts_encrypted
 from captcha_solver import solve_captcha
+from phone_verification import get_phone_number, get_sms_code
+import importlib
+from file_lock import FileLock
 
 import json
+
+def get_parser(site):
+    """Dynamically loads the parser for a given site."""
+    try:
+        module_name = f"parsers.{site.replace('.', '_')}"
+        class_name = "".join([s.capitalize() for s in site.split('.')]) + "Parser"
+        module = importlib.import_module(module_name)
+        return getattr(module, class_name)()
+    except (ImportError, AttributeError):
+        return None
 
 # Load config
 with open("config.json") as f:
@@ -82,15 +95,15 @@ def load_profiles():
         return []
 
 def write_log(log_entry):
-    try:
-        with open("logs.json", "r+") as f:
+    with FileLock("logs.json") as f:
+        try:
             logs = json.load(f)
-            logs.append(log_entry)
-            f.seek(0)
-            json.dump(logs, f, indent=2)
-    except (FileNotFoundError, json.JSONDecodeError):
-        with open("logs.json", "w") as f:
-            json.dump([log_entry], f, indent=2)
+        except (FileNotFoundError, json.JSONDecodeError):
+            logs = []
+        logs.append(log_entry)
+        f.seek(0)
+        json.dump(logs, f, indent=2)
+        f.truncate()
 
 class Bot:
     def __init__(self):
@@ -172,10 +185,20 @@ class Bot:
 
             driver.find_element(By.XPATH, "//button[contains(text(),'Sign Up')]").click()
             time.sleep(5)
-            if "verify" in driver.page_source.lower():
+            if "verify" in driver.page_source.lower() and "email" in driver.page_source.lower():
                 code = fetch_email_code(sid_token, seq)
                 driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(code)
                 driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
+
+            if "verify" in driver.page_source.lower() and "phone" in driver.page_source.lower():
+                phone_number = get_phone_number()
+                if phone_number:
+                    driver.find_element(By.CSS_SELECTOR, "input[type='tel']").send_keys(phone_number)
+                    driver.find_element(By.XPATH, "//button[contains(text(),'Send')]").click()
+                    sms_code = get_sms_code(phone_number)
+                    if sms_code:
+                        driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(sms_code)
+                        driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
 
             accounts.append({"site": site, "email": email, "password": password, "username": username, "profile": profile, "status": "active"})
             save_accounts_encrypted(accounts, ENCRYPTION_PASSWORD)
@@ -293,20 +316,6 @@ class Bot:
             print(f"Payout error {site}: {e}")
         return False
 
-    def find_offers(self, driver):
-        offers = []
-        offer_elements = driver.find_elements(By.XPATH, "//*[contains(text(), '$')]")
-        for offer_element in offer_elements:
-            offer_text = offer_element.text
-            try:
-                value = float(re.search(r'\$(\d+\.\d+)', offer_text).group(1))
-                time_match = re.search(r'(\d+)\s*min', offer_text)
-                time_to_complete = int(time_match.group(1)) if time_match else 10 # default to 10 mins
-                offers.append({"id": offer_element.id, "site": driver.current_url.split("/")[2].replace("www.", ""), "value": value, "time_to_complete": time_to_complete, "element": offer_element})
-            except:
-                pass
-        return offers
-
     def detect_honeypots(self, driver):
         try:
             # Check for invisible links
@@ -341,7 +350,9 @@ class Bot:
                             service = Service(CHROMEDRIVER_PATH)
                             driver = webdriver.Chrome(service=service, options=options)
                             driver.get(f"https://{site}{SITE_PATHS[site]['tasks']}")
-                            all_offers.extend(self.find_offers(driver))
+                            parser = get_parser(site)
+                            if parser:
+                                all_offers.extend(parser.find_offers(driver))
                             driver.quit()
                         except:
                             pass
@@ -404,7 +415,7 @@ class Bot:
                 # Log the error for later analysis
                 with open("error.log", "a") as f:
                     f.write(f"{time.time()}: {e}\n")
-            
+
             time.sleep(random.randint(1800, 3600))
 
     def reading_time(self, driver):

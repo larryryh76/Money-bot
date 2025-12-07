@@ -1,1 +1,6 @@
 __pycache__/
+*.json
+!sites.json
+!profiles.json
+*.log
+*.encrypted
