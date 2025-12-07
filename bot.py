@@ -106,9 +106,10 @@ def write_log(log_entry):
         f.truncate()
 
 class Bot:
-    def __init__(self):
+    def __init__(self, config):
+        self.config = config
         self.last_cashout_check = {}
-        self.operations_ai = OperationsAI()
+        self.operations_ai = OperationsAI(config)
         self.evolution_ai = EvolutionAI()
         self.profiles = load_profiles()
         self.task_queue = []
@@ -191,11 +192,11 @@ class Bot:
                 driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
 
             if "verify" in driver.page_source.lower() and "phone" in driver.page_source.lower():
-                phone_number = get_phone_number()
+                phone_number = get_phone_number(self.config)
                 if phone_number:
                     driver.find_element(By.CSS_SELECTOR, "input[type='tel']").send_keys(phone_number)
                     driver.find_element(By.XPATH, "//button[contains(text(),'Send')]").click()
-                    sms_code = get_sms_code(phone_number)
+                    sms_code = get_sms_code(self.config, phone_number)
                     if sms_code:
                         driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(sms_code)
                         driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
@@ -411,5 +412,7 @@ class Bot:
             time.sleep(3600)
 
 if __name__ == "__main__":
-    bot = Bot()
+    with open("config.json") as f:
+        config = json.load(f)
+    bot = Bot(config)
     bot.start()

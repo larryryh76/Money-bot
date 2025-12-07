@@ -6,15 +6,16 @@ from bs4 import BeautifulSoup
 from secure_storage import load_accounts_encrypted
 from file_lock import FileLock
 
-with open("config.json") as f:
-    config = json.load(f)
-ENCRYPTION_PASSWORD = config.get("encryption_password", "CHANGE_THIS_PASSWORD")
+ENCRYPTION_PASSWORD = None
 
 class OperationsAI:
-    def __init__(self):
+    def __init__(self, config):
+        self.config = config
+        global ENCRYPTION_PASSWORD
+        ENCRYPTION_PASSWORD = self.config.get("encryption_password", "CHANGE_THIS_PASSWORD")
         with open("sites.json") as f:
             self.sites = json.load(f)
-        self.learning_ai = LearningAI()
+        self.learning_ai = LearningAI(config)
         self.cooldown_sites = {}
 
     def manage_tasks(self, profiles, offers):
@@ -56,31 +57,18 @@ class OperationsAI:
         return sorted(offers, key=lambda offer: offer_scores[offer["id"]], reverse=True)
 
     def select_wallet(self, available_options):
-        with open("config.json") as f:
-            config = json.load(f)
-        wallets = config.get("wallets", [])
+        wallets = self.config.get("wallets", [])
 
-        prompt = f"Given the available withdrawal options: {', '.join(available_options)}, and my available wallets: {json.dumps(wallets)}. Which wallet type should I use? Respond with only the wallet type (e.g., 'BTC')."
-
-        try:
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                                 headers={"Authorization": f"Bearer {config.get('api_key')}"},
-                                 json={"model": config.get("ai_model", "deepseek/deepseek-r1:free"),
-                                       "messages": [{"role": "user", "content": prompt}],
-                                       "max_tokens": 10}).json()
-            selected_type = resp['choices'][0]['message']['content'].strip().upper()
-
+        for option in available_options:
             for wallet in wallets:
-                if wallet["type"].upper() == selected_type:
+                if option.upper() == wallet["type"].upper():
                     return wallet
-        except requests.exceptions.RequestException as e:
-            print(f"Error calling OpenRouter API for wallet selection: {e}")
 
         return None
 
 class LearningAI:
-    def __init__(self):
-        pass
+    def __init__(self, config):
+        self.config = config
 
     def analyze_logs(self):
         try:
@@ -117,8 +105,8 @@ class LearningAI:
 
         try:
             resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                                 headers={"Authorization": f"Bearer {config.get('api_key')}"},
-                                 json={"model": config.get("ai_model", "deepseek/deepseek-r1:free"),
+                                 headers={"Authorization": f"Bearer {self.config.get('api_key')}"},
+                                 json={"model": self.config.get("ai_model", "deepseek/deepseek-r1:free"),
                                        "messages": [{"role": "user", "content": prompt}],
                                        "max_tokens": 200}).json()
             new_profile_str = resp['choices'][0]['message']['content'].strip()
