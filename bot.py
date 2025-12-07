@@ -210,82 +210,20 @@ class Bot:
 
     def do_tasks(self, driver, task, profile):
         site = task["site"]
-        paths = SITE_PATHS[site]
-        tasks = 0
-        retries = 3
-        driver.get(f"https://{site}{paths['tasks']}")
-        self.reading_time(driver)
-        time.sleep(10)
-        for _ in range(5):
-            success = False
-            try:
-                if self.detect_honeypots(driver):
-                    print(f"Honeypot detected on {site}, aborting task.")
-                    break
+        parser = get_parser(site)
+        if not parser:
+            print(f"No parser found for {site}, skipping task.")
+            return 0
 
-                # Click on the offer
-                offers = self.find_offers(driver)
-                if not offers:
-                    break
+        try:
+            if self.detect_honeypots(driver):
+                print(f"Honeypot detected on {site}, aborting task.")
+                return 0
 
-                offer_to_do = random.choice(offers)
-                offer_to_do["element"].click()
-
-                self.reading_time(driver)
-
-                question_element = driver.find_element(By.CSS_SELECTOR, "label, span, p, h1, h2, h3")
-                question_text = question_element.text
-                if question_text:
-                    context = driver.page_source
-
-                    # Check for different input types near the question
-                    try:
-                        # Text input
-                        input_field = question_element.find_element(By.XPATH, "./following::input[@type='text'] | ./following::textarea")
-                        answer = ai_or_random_answer(question_text, context, profile=profile)
-                        input_field.send_keys(answer)
-                        success = True
-                    except:
-                        try:
-                            # Multiple choice
-                            option_elements = question_element.find_elements(By.XPATH, "./following::input[@type='radio'] | ./following::input[@type='checkbox']")
-                            option_labels = [opt.find_element(By.XPATH, "./following-sibling::label").text for opt in option_elements]
-                            answer = ai_or_random_answer(question_text, context, options=option_labels, profile=profile)
-                            for opt in option_elements:
-                                if opt.find_element(By.XPATH, "./following-sibling::label").text == answer:
-                                    opt.click()
-                                    success = True
-                                    break
-                        except:
-                            try:
-                                # Dropdown
-                                select = question_element.find_element(By.XPATH, "./following::select")
-                                option_elements = select.find_elements(By.TAG_NAME, "option")
-                                option_labels = [opt.text for opt in option_elements]
-                                answer = ai_or_random_answer(question_text, context, options=option_labels, profile=profile)
-                                for opt in option_elements:
-                                    if opt.text == answer:
-                                        opt.click()
-                                        success = True
-                                        break
-                            except:
-                                pass
-                    time.sleep(self.evolution_ai.parameters["action_delay"])
-
-                btn = driver.find_element(By.XPATH, "//button[contains(text(),'Start') or contains(text(),'Next') or contains(text(),'Play')] | //a[contains(@href,'offer')]")
-                btn.click()
-                time.sleep(random.uniform(10, 25))
-                tasks += 1
-                retries = 3 # Reset retries after a successful task
-            except Exception as e:
-                print(f"Error in do_tasks: {e}")
-                retries -= 1
-                if retries == 0:
-                    break
-
-            write_log({"site": site, "timestamp": time.time(), "success": success, "profile": profile})
-
-        return tasks
+            return parser.do_task(driver, task, profile)
+        except Exception as e:
+            print(f"Error in do_tasks for {site}: {e}")
+            return 0
 
     def auto_payout(self, driver, site):
         paths = SITE_PATHS[site]
@@ -336,7 +274,9 @@ class Bot:
                 if not self.task_queue:
                     # Find offers on all sites
                     all_offers = []
-                    for site in SITE_PATHS.keys():
+                    for site, site_data in SITE_PATHS.items():
+                        if site_data.get("status", "enabled") == "disabled":
+                            continue
                         try:
                             proxy = get_proxy()
                             ua = UserAgent()
@@ -407,11 +347,11 @@ class Bot:
                 save_accounts_encrypted(accounts, ENCRYPTION_PASSWORD)
 
                 driver.quit()
-            except (requests.exceptions.RequestException, webdriver.exceptions.WebDriverException) as e:
-                print(f"Recoverable error: {e}")
+            except (requests.exceptions.RequestException, webdriver.exceptions.WebDriverException, webdriver.exceptions.TimeoutException) as e:
+                print(f"A recoverable network or browser error occurred: {e}")
                 time.sleep(60) # Wait a minute before retrying
             except Exception as e:
-                print(f"Unhandled error: {e}")
+                print(f"An unhandled error occurred: {e}")
                 # Log the error for later analysis
                 with open("error.log", "a") as f:
                     f.write(f"{time.time()}: {e}\n")

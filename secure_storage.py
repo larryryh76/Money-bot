@@ -4,6 +4,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 import json
 import os
+from file_lock import FileLock
 
 def get_key(password, salt):
     kdf = PBKDF2HMAC(
@@ -31,8 +32,10 @@ def decrypt_data(encrypted_data_with_salt, password):
 
 def save_accounts_encrypted(accounts, password):
     encrypted_data = encrypt_data(accounts, password)
-    with open("accounts.json.encrypted", "wb") as f:
+    with FileLock("accounts.json.encrypted") as f:
+        f.seek(0)
         f.write(encrypted_data)
+        f.truncate()
 
 def load_accounts_encrypted(password):
     try:

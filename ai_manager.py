@@ -65,7 +65,7 @@ class OperationsAI:
         try:
             resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
                                  headers={"Authorization": f"Bearer {config.get('api_key')}"},
-                                 json={"model": "deepseek/deepseek-r1:free",
+                                 json={"model": config.get("ai_model", "deepseek/deepseek-r1:free"),
                                        "messages": [{"role": "user", "content": prompt}],
                                        "max_tokens": 10}).json()
             selected_type = resp['choices'][0]['message']['content'].strip().upper()
@@ -118,7 +118,7 @@ class LearningAI:
         try:
             resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
                                  headers={"Authorization": f"Bearer {config.get('api_key')}"},
-                                 json={"model": "deepseek/deepseek-r1:free",
+                                 json={"model": config.get("ai_model", "deepseek/deepseek-r1:free"),
                                        "messages": [{"role": "user", "content": prompt}],
                                        "max_tokens": 200}).json()
             new_profile_str = resp['choices'][0]['message']['content'].strip()
@@ -191,14 +191,13 @@ class EvolutionAI:
         # Disable sites with low success rates
         with FileLock("sites.json") as f:
             sites = json.load(f)
-            updated_sites = sites.copy()
             for site, performance in site_performance.items():
                 if performance["success"] < 10 and performance["failure"] > 20:
-                    if site in updated_sites:
-                        del updated_sites[site]
+                    if site in sites and sites[site].get("status", "enabled") == "enabled":
+                        sites[site]["status"] = "disabled"
                         print(f"EvolutionAI: Autonomously disabled site {site} due to low performance.")
             f.seek(0)
-            json.dump(updated_sites, f, indent=2)
+            json.dump(sites, f, indent=2)
             f.truncate()
 
         # Adjust parameters based on overall performance
