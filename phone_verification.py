@@ -2,37 +2,55 @@ import requests
 import time
 import json
 
-def get_phone_number(config):
-    """Gets a temporary phone number from the configured service."""
-    provider = config.get("phone_verification_provider")
-    if provider == "temp-mail.org":
-        try:
-            response = requests.get("https://api.temp-mail.org/request/phone/format/json")
-            data = response.json()
-            return data[0]['phone']
-        except requests.exceptions.RequestException as e:
-            print(f"Error getting phone number from temp-mail.org: {e}")
-            return None
-    else:
-        print(f"Phone verification provider '{provider}' is not supported.")
-        return None
+class BasePhoneProvider:
+    def get_phone_number(self):
+        raise NotImplementedError
 
-def get_sms_code(config, phone_number):
-    """Gets the latest SMS code for a given phone number from the configured service."""
-    provider = config.get("phone_verification_provider")
-    if provider == "temp-mail.org":
+    def get_sms_code(self, phone_number):
+        raise NotImplementedError
+
+class OnlineSimProvider(BasePhoneProvider):
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.base_url = "https://onlinesim.ru/api"
+
+    def get_phone_number(self):
         try:
-            # Wait a bit for the SMS to arrive
-            time.sleep(15)
-            response = requests.get(f"https://api.temp-mail.org/request/sms/format/json?phone={phone_number}")
+            response = requests.get(f"{self.base_url}/getNum.php?apikey={self.api_key}&service=6115")
             data = response.json()
-            if data:
-                # Extract the 6-digit code from the message
-                import re
-                match = re.search(r'\d{6}', data[0]['sms'])
-                if match:
-                    return match.group(0)
+            if data.get("response") == "1":
+                return data["number"]
+            else:
+                print(f"Error getting phone number from onlinesim.ru: {data.get('error_msg')}")
+                return None
         except requests.exceptions.RequestException as e:
-            print(f"Error getting SMS code from temp-mail.org: {e}")
+            print(f"Error getting phone number from onlinesim.ru: {e}")
             return None
-    return None
+
+    def get_sms_code(self, phone_number):
+        try:
+            # Wait for SMS to arrive
+            for _ in range(3): # Poll 3 times
+                time.sleep(20)
+                response = requests.get(f"{self.base_url}/getState.php?apikey={self.api_key}&number={phone_number}")
+                data = response.json()
+                if data and data[0].get("response") == "1":
+                    return data[0]["msg"]
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"Error getting SMS code from onlinesim.ru: {e}")
+            return None
+
+def get_phone_provider(config):
+    providers = config.get("providers", {})
+    provider_name = providers.get("phone_verification")
+    api_key = providers.get("onlinesim_api_key")
+
+    if provider_name == "onlinesim.ru":
+        if not api_key:
+            print("onlinesim.ru API key is missing from config.")
+            return None
+        return OnlineSimProvider(api_key)
+    else:
+        print(f"Phone verification provider '{provider_name}' is not supported.")
+        return None

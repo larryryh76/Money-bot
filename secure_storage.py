@@ -2,9 +2,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
-import json
 import os
-from file_lock import FileLock
 
 def get_key(password, salt):
     kdf = PBKDF2HMAC(
@@ -19,7 +17,7 @@ def encrypt_data(data, password):
     salt = os.urandom(16)
     key = get_key(password, salt)
     f = Fernet(key)
-    encrypted_data = f.encrypt(json.dumps(data).encode())
+    encrypted_data = f.encrypt(data)
     return salt + encrypted_data
 
 def decrypt_data(encrypted_data_with_salt, password):
@@ -27,20 +25,4 @@ def decrypt_data(encrypted_data_with_salt, password):
     encrypted_data = encrypted_data_with_salt[16:]
     key = get_key(password, salt)
     f = Fernet(key)
-    decrypted_data = f.decrypt(encrypted_data)
-    return json.loads(decrypted_data.decode())
-
-def save_accounts_encrypted(accounts, password):
-    encrypted_data = encrypt_data(accounts, password)
-    with FileLock("accounts.json.encrypted") as f:
-        f.seek(0)
-        f.write(encrypted_data)
-        f.truncate()
-
-def load_accounts_encrypted(password):
-    try:
-        with open("accounts.json.encrypted", "rb") as f:
-            encrypted_data_with_salt = f.read()
-        return decrypt_data(encrypted_data_with_salt, password)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+    return f.decrypt(encrypted_data)

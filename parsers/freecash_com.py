@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 import re
 import time
 import random
+from bot import ai_or_random_answer
 
 class FreecashComParser(BaseParser):
     def find_offers(self, driver):
@@ -25,11 +26,11 @@ class FreecashComParser(BaseParser):
                 pass
         return offers
 
-    def do_task(self, driver, task, profile):
+    def do_task(self, driver, task, profile, account_id):
         tasks_completed = 0
         retries = 3
 
-        task["element"].click()
+        self.human_like_click(driver, task["element"])
         driver.implicitly_wait(10)
 
         for _ in range(5): # Attempt to complete 5 tasks within the offer
@@ -47,16 +48,17 @@ class FreecashComParser(BaseParser):
                     pass
 
                 if input_field and input_field.is_displayed():
-                    answer = ai_or_random_answer(question_text, driver.page_source, profile=profile)
-                    input_field.send_keys(answer)
+                    answer = ai_or_random_answer(account_id, question_text, driver.page_source, profile=profile)
+                    self.human_like_send_keys(driver, input_field, answer)
                 else:
                     # Handle multiple choice questions
                     options = question_element.find_elements(By.XPATH, "./following::div[@class='option']")
                     if options:
-                        random.choice(options).click()
+                        self.human_like_click(driver, random.choice(options))
 
                 # Click the next button
-                driver.find_element(By.XPATH, "//button[contains(text(),'Next')]").click()
+                next_button = driver.find_element(By.XPATH, "//button[contains(text(),'Next')]")
+                self.human_like_click(driver, next_button)
 
                 time.sleep(random.uniform(5, 10))
                 tasks_completed += 1

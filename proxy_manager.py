@@ -1,36 +1,43 @@
 import requests
 import random
-from bs4 import BeautifulSoup
+import threading
 
 class ProxyManager:
-    def __init__(self):
+    def __init__(self, config):
+        self.config = config
         self.proxies = []
-        self.good_proxies = []
 
     def fetch_proxies(self):
         try:
-            response = requests.get("https://free-proxy-list.net/")
-            soup = BeautifulSoup(response.text, "html.parser")
-            table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-            for row in table.find_all("tr")[1:]:
-                tds = row.find_all("td")
-                ip = tds[0].text.strip()
-                port = tds[1].text.strip()
-                self.proxies.append(f"http://{ip}:{port}")
+            response = requests.get("https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all")
+            self.proxies = response.text.split("\r\n")
         except requests.exceptions.RequestException as e:
             print(f"Error fetching proxies: {e}")
 
     def test_proxies(self):
-        self.good_proxies = []
-        for proxy in self.proxies:
+        tested_proxies = []
+        threads = []
+
+        def test_proxy(proxy):
             try:
                 response = requests.get("https://www.google.com", proxies={"http": proxy, "https": proxy}, timeout=5)
                 if response.status_code == 200:
-                    self.good_proxies.append(proxy)
-            except requests.exceptions.RequestException:
+                    tested_proxies.append(proxy)
+            except:
                 pass
 
+        for proxy in self.proxies:
+            thread = threading.Thread(target=test_proxy, args=(proxy,))
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+
+        self.proxies = tested_proxies
+        print(f"Found {len(self.proxies)} working proxies.")
+
     def get_proxy(self):
-        if self.good_proxies:
-            return random.choice(self.good_proxies)
+        if self.proxies:
+            return random.choice(self.proxies)
         return None

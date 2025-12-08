@@ -4,3 +4,7 @@ __pycache__/
 !profiles.json
 *.log
 *.encrypted
+.env
+bot.db
+bot_state.json
+*.crx

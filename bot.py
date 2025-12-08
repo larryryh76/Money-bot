@@ -6,50 +6,52 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fake_useragent import UserAgent
-from ai_manager import OperationsAI, EvolutionAI, ENCRYPTION_PASSWORD
+from ai_manager import OperationsAI, EvolutionAI
 from proxy_manager import ProxyManager
-from secure_storage import load_accounts_encrypted, save_accounts_encrypted
 from captcha_solver import solve_captcha
-from phone_verification import get_phone_number, get_sms_code
+from phone_verification import get_phone_provider
 import importlib
-from file_lock import FileLock
+from dotenv import load_dotenv
+from database_manager import init_db, load_sites, save_sites, write_log_db, get_persona_answer, save_persona_answer
+from worker import Worker
+from utils import get_parser
 
 import json
 
-def get_parser(site):
-    """Dynamically loads the parser for a given site."""
-    try:
-        module_name = f"parsers.{site.replace('.', '_')}"
-        class_name = "".join([s.capitalize() for s in site.split('.')]) + "Parser"
-        module = importlib.import_module(module_name)
-        return getattr(module, class_name)()
-    except (ImportError, AttributeError):
-        return None
+load_dotenv()
+init_db()
 
 # Load config
 with open("config.json") as f:
     config = json.load(f)
 
-API_KEY = config.get("api_key", "")
+config["API_KEY"] = os.getenv("API_KEY")
+config["ENCRYPTION_PASSWORD"] = os.getenv("ENCRYPTION_PASSWORD")
+config["TWOCAPTCHA_API_KEY"] = os.getenv("TWOCAPTCHA_API_KEY")
+
 THREADS = config.get("threads", 90)
 THREAD_DELAY = config.get("thread_delay", 10)
 CASHOUT_CHECK_INTERVAL = config.get("cashout_check_interval", 3600)
 CHROMEDRIVER_PATH = config.get("chromedriver_path", "/usr/bin/chromedriver")
-TWOCAPTCHA_API_KEY = config.get("2captcha_api_key", "REPLACE_WITH_YOUR_2CAPTCHA_API_KEY")
 
 # Load sites
-with open("sites.json") as f:
-    SITE_PATHS = json.load(f)
+SITE_PATHS = load_sites()
 
-proxy_manager = ProxyManager()
+proxy_manager = ProxyManager(config)
 proxy_manager.fetch_proxies()
 proxy_manager.test_proxies()
 
 def get_proxy():
     return proxy_manager.get_proxy()
 
-def ai_or_random_answer(question, context="", options=None, profile=None):
-    if API_KEY:
+def ai_or_random_answer(account_id, question, context="", options=None, profile=None):
+    # Check if we have answered this question before for this account
+    previous_answer = get_persona_answer(account_id, question)
+    if previous_answer:
+        return previous_answer
+
+    # If not, generate a new answer
+    if config["API_KEY"]:
         try:
             profile_str = json.dumps(profile) if profile else ""
             if options:
@@ -58,17 +60,20 @@ def ai_or_random_answer(question, context="", options=None, profile=None):
                 prompt = f"Profile: {profile_str}\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words based on the profile."
 
             resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                                 headers={"Authorization": f"Bearer {API_KEY}"},
-                                 json={"model": "deepseek/deepseek-r1:free",
+                                 headers={"Authorization": f"Bearer {config['API_KEY']}"},
+                                 json={"model": config.get("ai_model", "deepseek/deepseek-r1:free"),
                                        "messages": [{"role": "user", "content": prompt}],
                                        "max_tokens": 15}).json()
-            return resp['choices'][0]['message']['content'].strip()
+            answer = resp['choices'][0]['message']['content'].strip()
+            save_persona_answer(account_id, question, answer)
+            return answer
         except requests.exceptions.RequestException as e:
             print(f"Error calling OpenRouter API: {e}")
 
-    if options:
-        return random.choice(options)
-    return random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
+    # Fallback to random answer
+    answer = random.choice(options) if options else random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
+    save_persona_answer(account_id, question, answer)
+    return answer
 
 def create_temp_email():
     resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
@@ -95,324 +100,119 @@ def load_profiles():
         return []
 
 def write_log(log_entry):
-    with FileLock("logs.json") as f:
-        try:
-            logs = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            logs = []
-        logs.append(log_entry)
-        f.seek(0)
-        json.dump(logs, f, indent=2)
-        f.truncate()
+    write_log_db(log_entry)
 
 class Bot:
     def __init__(self, config):
         self.config = config
-        self.last_cashout_check = {}
         self.operations_ai = OperationsAI(config)
         self.evolution_ai = EvolutionAI()
         self.profiles = load_profiles()
         self.task_queue = []
+        self.workers = []
+        self.last_cashout_check = {}
+        self.running = True
 
-    def auto_signup(self, driver, site):
-        accounts = load_accounts_encrypted(ENCRYPTION_PASSWORD)
-        profiles = load_profiles()
+    def save_state(self):
+        with open("bot_state.json", "w") as f:
+            json.dump({"task_queue": self.task_queue}, f)
 
-        # Try to find an existing account for the site
-        for account in accounts:
-            if account["site"] == site:
-                try:
-                    paths = SITE_PATHS[site]
-                    if "login" in paths:
-                        driver.get(f"https://{site}{paths['login']}")
-                        wait = WebDriverWait(driver, 15)
-
-                        # Try different selectors for email and password fields
-                        email_selectors = ["input[type='email']", "input[name='email']", "input[id='email']"]
-                        password_selectors = ["input[type='password']", "input[name='password']", "input[id='password']"]
-
-                        for email_selector in email_selectors:
-                            try:
-                                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, email_selector)))
-                                driver.find_element(By.CSS_SELECTOR, email_selector).send_keys(account["email"])
-                                break
-                            except:
-                                pass
-
-                        for password_selector in password_selectors:
-                            try:
-                                driver.find_element(By.CSS_SELECTOR, password_selector).send_keys(account["password"])
-                                break
-                            except:
-                                pass
-
-                        driver.find_element(By.XPATH, "//button[contains(text(),'Login') or contains(text(), 'Sign In')]").click()
-                        time.sleep(5)
-
-                        # Check for successful login
-                        try:
-                            driver.find_element(By.XPATH, "//*[contains(text(),'Logout') or contains(text(), 'Sign Out')]")
-                            return True
-                        except:
-                            return False
-                except Exception as e:
-                    print(f"Login fail {site}: {e}")
-                    return False
-
-        # Create a new account if none exists
+    def load_state(self):
         try:
-            paths = SITE_PATHS[site]
-            driver.get(f"https://{site}{paths['signup']}")
-            wait = WebDriverWait(driver, 15)
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
-            email, sid_token, seq = create_temp_email()
-            password = "TempPass123!"
-            username = f"User{random.randint(1000,9999)}"
-            profile = random.choice(profiles)
-
-            driver.find_element(By.CSS_SELECTOR, "input[type='email']").send_keys(email)
-            driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys(password)
-            driver.find_element(By.CSS_SELECTOR, "input[name*='name']").send_keys(username)
-
-            # Check for CAPTCHA
-            try:
-                captcha = driver.find_element(By.CLASS_NAME, "g-recaptcha")
-                site_key = captcha.get_attribute("data-sitekey")
-                solution = solve_captcha(TWOCAPTCHA_API_KEY, site_key, driver.current_url)
-                if solution:
-                    driver.execute_script(f"document.getElementById('g-recaptcha-response').innerHTML='{solution}';")
-            except:
-                pass
-
-            driver.find_element(By.XPATH, "//button[contains(text(),'Sign Up')]").click()
-            time.sleep(5)
-            if "verify" in driver.page_source.lower() and "email" in driver.page_source.lower():
-                code = fetch_email_code(sid_token, seq)
-                driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(code)
-                driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
-
-            if "verify" in driver.page_source.lower() and "phone" in driver.page_source.lower():
-                phone_number = get_phone_number(self.config)
-                if phone_number:
-                    driver.find_element(By.CSS_SELECTOR, "input[type='tel']").send_keys(phone_number)
-                    driver.find_element(By.XPATH, "//button[contains(text(),'Send')]").click()
-                    sms_code = get_sms_code(self.config, phone_number)
-                    if sms_code:
-                        driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(sms_code)
-                        driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
-
-            accounts.append({"site": site, "email": email, "password": password, "username": username, "profile": profile, "status": "active"})
-            save_accounts_encrypted(accounts, ENCRYPTION_PASSWORD)
-            print(f"Account created on {site}: {email}")
-            return True
-        except Exception as e:
-            print(f"Signup fail {site}: {e}")
-            return False
-
-    def do_tasks(self, driver, task, profile):
-        site = task["site"]
-        parser = get_parser(site)
-        if not parser:
-            print(f"No parser found for {site}, skipping task.")
-            return 0
-
-        try:
-            if self.detect_honeypots(driver):
-                print(f"Honeypot detected on {site}, aborting task.")
-                return 0
-
-            return parser.do_task(driver, task, profile)
-        except Exception as e:
-            print(f"Error in do_tasks for {site}: {e}")
-            return 0
-
-    def auto_payout(self, driver, site):
-        paths = SITE_PATHS[site]
-        min_bal = paths['min']
-        driver.get(f"https://{site}{paths['withdraw']}")
-        time.sleep(10)
-        try:
-            balance_str = driver.find_element(By.CSS_SELECTOR, ".balance, [class*='balance']").text.replace("$", "").strip()
-            balance = float(balance_str) if balance_str.replace(".", "").isdigit() else 0
-            if balance >= min_bal:
-                # Scrape available withdrawal options
-                available_options = [btn.text for btn in driver.find_elements(By.XPATH, "//button[contains(text(),'Crypto') or contains(text(),'BTC') or contains(text(),'ETH') or contains(text(),'LTC')]")]
-
-                selected_wallet = self.operations_ai.select_wallet(available_options)
-
-                if selected_wallet:
-                    driver.find_element(By.XPATH, f"//button[contains(text(),'{selected_wallet['type']}')]").click()
-                    time.sleep(3)
-                    driver.find_element(By.CSS_SELECTOR, "input[placeholder*='address']").send_keys(selected_wallet['address'])
-                    driver.find_element(By.XPATH, "//button[contains(text(),'Withdraw') or contains(text(),'Confirm')]").click()
-                    print(f"Payout ${balance} from {site} to {selected_wallet['address']} ({selected_wallet['type']})")
-                    return True
-                else:
-                    print(f"No suitable wallet found for withdrawal on {site}")
-            else:
-                print(f"${balance} < ${min_bal} on {site}")
-        except Exception as e:
-            print(f"Payout error {site}: {e}")
-        return False
-
-    def detect_honeypots(self, driver):
-        try:
-            # Check for invisible links
-            invisible_links = driver.find_elements(By.XPATH, "//a[contains(@style,'display:none') or contains(@style,'visibility:hidden')]")
-            if invisible_links:
-                return True
-            # Check for form fields that are not visible
-            invisible_inputs = driver.find_elements(By.XPATH, "//input[@type='text' and (contains(@style,'display:none') or contains(@style,'visibility:hidden'))]")
-            if invisible_inputs:
-                return True
-        except:
+            with open("bot_state.json", "r") as f:
+                state = json.load(f)
+                self.task_queue = state.get("task_queue", [])
+        except FileNotFoundError:
             pass
-        return False
-
-    def run(self):
-        while True:
-            try:
-                if not self.task_queue:
-                    # Find offers on all sites
-                    all_offers = []
-                    for site, site_data in SITE_PATHS.items():
-                        if site_data.get("status", "enabled") == "disabled":
-                            continue
-                        try:
-                            proxy = get_proxy()
-                            ua = UserAgent()
-                            options = Options()
-                            options.add_argument('--headless')
-                            options.add_argument('--no-sandbox')
-                            options.add_argument('--disable-dev-shm-usage')
-                            options.add_argument('--disable-gpu')
-                            options.add_argument(f'--user-agent={ua.random}')
-                            if proxy: options.add_argument(f'--proxy-server={proxy}')
-                            service = Service(CHROMEDRIVER_PATH)
-                            driver = webdriver.Chrome(service=service, options=options)
-                            driver.get(f"https://{site}{SITE_PATHS[site]['tasks']}")
-                            parser = get_parser(site)
-                            if parser:
-                                all_offers.extend(parser.find_offers(driver))
-                            driver.quit()
-                        except:
-                            pass
-                    self.task_queue = self.operations_ai.manage_tasks(self.profiles, all_offers)
-
-                if not self.task_queue:
-                    time.sleep(60)
-                    continue
-
-                task = self.task_queue.pop(0)
-                site = task["site"]
-                account = next((acc for acc in load_accounts_encrypted(ENCRYPTION_PASSWORD) if acc["site"] == site and acc["status"] == "active"), None)
-
-                if not account:
-                    continue
-
-                proxy = get_proxy()
-                ua = UserAgent()
-                options = Options()
-                options.add_argument('--headless')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument('--disable-gpu')
-                options.add_argument(f"--window-size={random.randint(1024, 1920)},{random.randint(768, 1080)}")
-                options.add_experimental_option("excludeSwitches", ["enable-automation"])
-                options.add_experimental_option('useAutomationExtension', False)
-                options.add_argument(f'--user-agent={ua.random}')
-                if proxy: options.add_argument(f'--proxy-server={proxy}')
-                service = Service(CHROMEDRIVER_PATH)
-                driver = webdriver.Chrome(service=service, options=options)
-
-                print(f"→ Working on {site} with account {account['email']}")
-
-                if self.auto_signup(driver, site):
-                    tasks = self.do_tasks(driver, task, account["profile"])
-                    print(f"Completed {tasks} tasks on {site}")
-
-                    if site not in self.last_cashout_check or time.time() - self.last_cashout_check[site] > CASHOUT_CHECK_INTERVAL:
-                        self.auto_payout(driver, site)
-                        self.last_cashout_check[site] = time.time()
-
-                    account["status"] = "active" # Reset status after successful task
-                else:
-                    account["status"] = "flagged"
-                    self.operations_ai.cooldown_sites[site] = time.time()
-
-                accounts = load_accounts_encrypted(ENCRYPTION_PASSWORD)
-                for i, acc in enumerate(accounts):
-                    if acc["email"] == account["email"] and acc["site"] == site:
-                        accounts[i] = account
-                        break
-                save_accounts_encrypted(accounts, ENCRYPTION_PASSWORD)
-
-                driver.quit()
-            except (requests.exceptions.RequestException, webdriver.exceptions.WebDriverException, webdriver.exceptions.TimeoutException) as e:
-                print(f"A recoverable network or browser error occurred: {e}")
-                time.sleep(60) # Wait a minute before retrying
-            except Exception as e:
-                print(f"An unhandled error occurred: {e}")
-                # Log the error for later analysis
-                with open("error.log", "a") as f:
-                    f.write(f"{time.time()}: {e}\n")
-
-            time.sleep(random.randint(1800, 3600))
-
-    def reading_time(self, driver):
-        text = driver.find_element(By.TAG_NAME, "body").text
-        word_count = len(text.split())
-        delay = word_count / 200 # Average reading speed is 200 wpm
-        time.sleep(delay)
-
-    def integrate_new_sites(self):
-        new_sites = self.evolution_ai.innovate()
-        for site in new_sites:
-            if site not in SITE_PATHS:
-                print(f"Attempting to integrate new site: {site}")
-                try:
-                    # Attempt to sign up and do a task
-                    proxy = get_proxy()
-                    ua = UserAgent()
-                    options = Options()
-                    options.add_argument('--headless')
-                    options.add_argument('--no-sandbox')
-                    options.add_argument('--disable-dev-shm-usage')
-                    options.add_argument('--disable-gpu')
-                    options.add_argument(f'--user-agent={ua.random}')
-                    if proxy: options.add_argument(f'--proxy-server={proxy}')
-                    service = Service(CHROMEDRIVER_PATH)
-                    driver = webdriver.Chrome(service=service, options=options)
-
-                    if self.auto_signup(driver, site):
-                        print(f"Successfully integrated new site: {site}")
-                        SITE_PATHS[site] = {"signup": "/register", "tasks": "/offers", "withdraw": "/cashout", "min": 0.50} # Default paths
-                        with open("sites.json", "w") as f:
-                            json.dump(SITE_PATHS, f, indent=2)
-                    driver.quit()
-                except Exception as e:
-                    print(f"Failed to integrate new site {site}: {e}")
 
     def start(self):
-        site_performance, profile_performance = self.operations_ai.learning_ai.analyze_logs()
-        recommendations = self.evolution_ai.optimize(site_performance, profile_performance)
-        if recommendations:
-            print("Optimization Recommendations:")
-            for rec in recommendations:
-                print(f"- {rec}")
+        self.load_state()
 
+        # Perform initial analysis and optimization
+        site_performance, profile_performance = self.operations_ai.learning_ai.analyze_logs()
+        self.evolution_ai.optimize(site_performance, profile_performance)
         self.evolution_ai.improve_self(site_performance)
         self.integrate_new_sites()
-        print(f"Starting {THREADS} accounts...")
-        for i in range(THREADS):
-            threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(THREAD_DELAY)
 
-        while True:
-            time.sleep(3600)
+        # Start worker threads
+        for i in range(self.config.get("threads", 1)):
+            worker = Worker(self.config, self.operations_ai, self.evolution_ai, proxy_manager)
+            self.workers.append(worker)
+            worker.start()
+            time.sleep(self.config.get("thread_delay", 1))
+
+        # Main loop to manage the task queue
+        while self.running:
+            if not self.task_queue:
+                self.populate_task_queue()
+
+            # Distribute tasks to workers
+            for worker in self.workers:
+                if not worker.task_queue:
+                    if self.task_queue:
+                        worker.task_queue.append(self.task_queue.pop(0))
+
+            time.sleep(10) # Check for new tasks every 10 seconds
+
+    def shutdown(self):
+        print("Shutting down bot...")
+        self.running = False
+        for worker in self.workers:
+            worker.stop()
+        for worker in self.workers:
+            worker.join()
+        self.save_state()
+
+    def populate_task_queue(self):
+        all_offers = []
+
+        proxy = get_proxy()
+        ua = UserAgent()
+        options = Options()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument(f'--user-agent={ua.random}')
+        if proxy: options.add_argument(f'--proxy-server={proxy}')
+        service = Service(self.config.get("chromedriver_path", "/usr/bin/chromedriver"))
+        driver = webdriver.Chrome(service=service, options=options)
+
+        for site, site_data in load_sites().items():
+            if site_data.get("status", "enabled") == "disabled":
+                continue
+            try:
+                driver.get(f"https://{site}{site_data['tasks']}")
+                parser = get_parser(site)
+                if parser:
+                    all_offers.extend(parser.find_offers(driver))
+            except Exception as e:
+                print(f"Error populating task queue for {site}: {e}")
+
+        driver.quit()
+        self.task_queue = self.operations_ai.manage_tasks(self.profiles, all_offers)
+
+    def integrate_new_sites(self):
+        new_sites = self.operations_ai.learning_ai.innovate()
+        if new_sites:
+            current_sites = load_sites()
+            for site in new_sites:
+                if site not in current_sites:
+                    print(f"Integrating new site: {site}")
+                    # Add with default paths, can be refined by evolution AI later
+                    current_sites[site] = {
+                        "signup": "/register", "login": "/login", "tasks": "/offers",
+                        "withdraw": "/cashout", "min": 1.00, "status": "enabled"
+                    }
+            save_sites(current_sites)
 
 if __name__ == "__main__":
     with open("config.json") as f:
         config = json.load(f)
     bot = Bot(config)
-    bot.start()
+    try:
+        bot.start()
+    except KeyboardInterrupt:
+        print("Caught keyboard interrupt. Shutting down.")
+    finally:
+        bot.shutdown()

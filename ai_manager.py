@@ -3,18 +3,11 @@ import json
 import time
 import requests
 from bs4 import BeautifulSoup
-from secure_storage import load_accounts_encrypted
-from file_lock import FileLock
-
-ENCRYPTION_PASSWORD = None
+from database_manager import load_accounts, get_logs, get_parameter, set_parameter, save_sites, load_sites
 
 class OperationsAI:
     def __init__(self, config):
         self.config = config
-        global ENCRYPTION_PASSWORD
-        ENCRYPTION_PASSWORD = self.config.get("encryption_password", "CHANGE_THIS_PASSWORD")
-        with open("sites.json") as f:
-            self.sites = json.load(f)
         self.learning_ai = LearningAI(config)
         self.cooldown_sites = {}
 
@@ -38,7 +31,7 @@ class OperationsAI:
         # Exclude sites that are in cooldown or have no active accounts
         active_offers = [offer for offer in sorted_offers if offer["site"] not in self.cooldown_sites or time.time() - self.cooldown_sites[offer["site"]] > 3600]
 
-        active_accounts = [acc for acc in load_accounts_encrypted(ENCRYPTION_PASSWORD) if acc["status"] == "active"]
+        active_accounts = [acc for acc in load_accounts() if acc["status"] == "active"]
         active_sites = set([acc["site"] for acc in active_accounts])
         active_offers = [offer for offer in active_offers if offer["site"] in active_sites]
 
@@ -71,12 +64,7 @@ class LearningAI:
         self.config = config
 
     def analyze_logs(self):
-        try:
-            with open("logs.json", "r") as f:
-                logs = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-
+        logs = get_logs()
         site_performance = {}
         profile_performance = {}
         for log in logs:
@@ -113,7 +101,7 @@ class LearningAI:
             new_profile = json.loads(new_profile_str)
 
             # Save the new profile
-            with FileLock("profiles.json") as f:
+            with open("profiles.json", "r+") as f:
                 profiles = json.load(f)
                 profiles.append(new_profile)
                 f.seek(0)
@@ -124,26 +112,30 @@ class LearningAI:
             print(f"Error generating new profile: {e}")
             return json.loads(best_profile_str)
 
-    def analyze_market(self):
-        # This is a placeholder for a more complex market analysis
-        return self.innovate()
+    def innovate(self):
+        # Use Google Search to find new survey sites
+        try:
+            query = "best online survey sites 2024"
+            response = requests.get(f"https://www.google.com/search?q={query}")
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-def load_parameters():
-    try:
-        with open("parameters.json", "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {"action_delay": 1.0}
+            new_sites = []
+            for link in soup.find_all('a'):
+                href = link.get('href')
+                if href and "url?q=" in href and not "google.com" in href:
+                    url = href.split("url?q=")[1].split("&")[0]
+                    domain = url.split("/")[2].replace("www.", "")
+                    if "survey" in domain.lower() or "paid" in domain.lower():
+                        new_sites.append(domain)
 
-def save_parameters(parameters):
-    with FileLock("parameters.json") as f:
-        f.seek(0)
-        json.dump(parameters, f, indent=2)
-        f.truncate()
+            return list(set(new_sites)) # Return unique sites
+        except Exception as e:
+            print(f"Error using Google Search for site discovery: {e}")
+            return []
 
 class EvolutionAI:
     def __init__(self):
-        self.parameters = load_parameters()
+        pass
 
     def improve_self(self, site_performance):
         # Adjust action_delay based on the overall success rate
@@ -151,53 +143,36 @@ class EvolutionAI:
         total_failure = sum([site_performance[site]["failure"] for site in site_performance])
         success_rate = total_success / (total_success + total_failure + 1)
 
+        action_delay = get_parameter("action_delay", 1.0)
         if success_rate < 0.5:
-            self.parameters["action_delay"] *= 1.1 # Slow down if failing
+            action_delay *= 1.1 # Slow down if failing
         else:
-            self.parameters["action_delay"] *= 0.9 # Speed up if succeeding
+            action_delay *= 0.9 # Speed up if succeeding
 
-        save_parameters(self.parameters)
-
-    def innovate(self):
-        # Use Google Search to find new survey sites
-        try:
-            search_results = google_search(query="best online survey sites 2024")
-            new_sites = []
-            for result in search_results:
-                # A simple heuristic to identify potential survey sites
-                if "survey" in result["title"].lower() or "paid" in result["title"].lower():
-                    domain = result["link"].split("/")[2].replace("www.", "")
-                    new_sites.append(domain)
-            return list(set(new_sites)) # Return unique sites
-        except Exception as e:
-            print(f"Error using Google Search for site discovery: {e}")
-            return []
+        set_parameter("action_delay", action_delay)
 
     def optimize(self, site_performance, profile_performance):
         # Autonomously apply changes to system parameters
 
         # Disable sites with low success rates
-        with FileLock("sites.json") as f:
-            sites = json.load(f)
-            for site, performance in site_performance.items():
-                if performance["success"] < 10 and performance["failure"] > 20:
-                    if site in sites and sites[site].get("status", "enabled") == "enabled":
-                        sites[site]["status"] = "disabled"
-                        print(f"EvolutionAI: Autonomously disabled site {site} due to low performance.")
-            f.seek(0)
-            json.dump(sites, f, indent=2)
-            f.truncate()
+        sites = load_sites()
+        for site, performance in site_performance.items():
+            if performance["success"] < 10 and performance["failure"] > 20:
+                if site in sites and sites[site].get("status", "enabled") == "enabled":
+                    sites[site]["status"] = "disabled"
+                    print(f"EvolutionAI: Autonomously disabled site {site} due to low performance.")
+        save_sites(sites)
 
         # Adjust parameters based on overall performance
         total_success = sum([profile_performance[p]["success"] for p in profile_performance])
         total_failure = sum([profile_performance[p]["failure"] for p in profile_performance])
         success_rate = total_success / (total_success + total_failure + 1)
 
-        parameters = load_parameters()
+        action_delay = get_parameter("action_delay", 1.0)
         if success_rate < 0.5:
-            parameters["action_delay"] *= 1.05 # Slow down if overall performance is poor
+            action_delay *= 1.05 # Slow down if overall performance is poor
             print(f"EvolutionAI: Decreased action speed due to low success rate.")
         else:
-            parameters["action_delay"] *= 0.95 # Speed up if overall performance is good
+            action_delay *= 0.95 # Speed up if overall performance is good
             print(f"EvolutionAI: Increased action speed due to high success rate.")
-        save_parameters(parameters)
+        set_parameter("action_delay", action_delay)
