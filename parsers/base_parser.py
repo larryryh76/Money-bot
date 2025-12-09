@@ -20,3 +20,9 @@ class BaseParser:
         for char in text:
             element.send_keys(char)
             time.sleep(random.uniform(0.05, 0.2))
+
+    def auto_signup(self, driver, config, profile):
+        raise NotImplementedError
+
+    def auto_payout(self, driver, config, account):
+        raise NotImplementedError

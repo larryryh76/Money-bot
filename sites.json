@@ -1,0 +1,8 @@
+{
+    "freecash.com": {
+        "signup": "/register",
+        "tasks": "/offers",
+        "withdraw": "/cashout",
+        "min": 0.50
+    }
+}

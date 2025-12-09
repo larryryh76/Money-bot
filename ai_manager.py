@@ -37,10 +37,6 @@ class OperationsAI:
 
         return active_offers
 
-    def allocate_resources(self, accounts, threads):
-        # Simple allocation for now, can be improved
-        return [{"thread_id": i, "accounts": [acc for acc in accounts if i % threads == 0]} for i in range(threads)]
-
     def set_priorities(self, offers):
         offer_scores = {}
         for offer in offers:

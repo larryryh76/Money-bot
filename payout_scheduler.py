@@ -10,6 +10,7 @@ from fake_useragent import UserAgent
 from database_manager import load_accounts, save_accounts, load_sites
 from ai_manager import OperationsAI
 from dotenv import load_dotenv
+from utils import get_parser
 import os
 
 load_dotenv()
@@ -31,6 +32,11 @@ def main():
             if not site_data:
                 continue
 
+            parser = get_parser(site)
+            if not parser:
+                print(f"No parser found for {site}")
+                continue
+
             try:
                 ua = UserAgent()
                 options = Options()
@@ -42,31 +48,7 @@ def main():
                 service = Service(config.get("chromedriver_path", "/usr/bin/chromedriver"))
                 driver = webdriver.Chrome(service=service, options=options)
 
-                driver.get(f"https://{site}{site_data['login']}")
-
-                # Basic login
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "email"))).send_keys(account["email"])
-                driver.find_element(By.NAME, "password").send_keys(account["password"])
-                driver.find_element(By.XPATH, "//button[@type='submit']").click()
-
-                # Navigate to withdrawal page
-                WebDriverWait(driver, 10).until(EC.url_changes(driver.current_url))
-                driver.get(f"https://{site}{site_data['withdraw']}")
-
-                # Check balance
-                balance_element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "balance")))
-                balance = float(balance_element.text.replace("$", ""))
-
-                if balance >= site_data["min"]:
-                    # Select wallet
-                    available_options = [opt.text for opt in driver.find_elements(By.CSS_SELECTOR, ".wallet-option")]
-                    wallet = operations_ai.select_wallet(available_options)
-
-                    if wallet:
-                        driver.find_element(By.XPATH, f"//div[contains(text(), '{wallet['type']}')]").click()
-                        driver.find_element(By.NAME, "wallet_address").send_keys(wallet["address"])
-                        driver.find_element(By.XPATH, "//button[contains(text(), 'Withdraw')]").click()
-                        print(f"Successfully initiated withdrawal for {account['email']} on {site}")
+                parser.auto_payout(driver, config, account)
 
                 driver.quit()
             except Exception as e:

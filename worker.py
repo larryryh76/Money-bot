@@ -4,7 +4,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from fake_useragent import UserAgent
-from database_manager import load_accounts, save_accounts
+from database_manager import load_accounts, save_accounts, write_log_db
 from utils import get_parser
 import threading
 
@@ -67,8 +67,16 @@ class Worker(threading.Thread):
 
                 parser = get_parser(site)
                 if parser:
-                    tasks_completed = parser.do_task(driver, task, account["profile"], account["id"])
-                    print(f"Completed {tasks_completed} tasks on {site}")
+                    tasks_completed, total_value = parser.do_task(driver, task, account["profile"], account["id"])
+                    print(f"Completed {tasks_completed} tasks on {site} for a total of ${total_value:.2f}")
+                    log_entry = {
+                        "site": site,
+                        "timestamp": time.time(),
+                        "success": 1,
+                        "profile": account["profile"],
+                        "value": total_value
+                    }
+                    write_log_db(log_entry)
                     account["status"] = "active"
                 else:
                     print(f"No parser found for {site}")
@@ -84,7 +92,10 @@ class Worker(threading.Thread):
                 save_accounts(accounts)
 
                 driver.quit()
+            except (requests.exceptions.RequestException, webdriver.WebDriverException) as e:
+                print(f"A network-related error occurred in a worker thread: {e}")
             except Exception as e:
-                print(f"An error occurred in a worker thread: {e}")
-
-            time.sleep(random.randint(1800, 3600))
+                print(f"An unexpected error occurred in a worker thread: {e}")
+            finally:
+                if 'driver' in locals() and driver:
+                    driver.quit()
