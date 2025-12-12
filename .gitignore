@@ -1,0 +1,10 @@
+__pycache__/
+*.json
+!sites.json
+!profiles.json
+*.log
+*.encrypted
+.env
+bot.db
+bot_state.json
+*.crx

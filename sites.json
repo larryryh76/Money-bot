@@ -1,0 +1,14 @@
+{
+    "freecash.com": {
+        "signup": "/register",
+        "tasks": "/offers",
+        "withdraw": "/cashout",
+        "min": 0.50
+    },
+    "swagbucks.com": {
+        "signup": "/p/register",
+        "tasks": "/discover",
+        "withdraw": "/rewards-store",
+        "min": 5.00
+    }
+}

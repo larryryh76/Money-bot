@@ -1,4 +1,4 @@
-hiimport time, random, requests, threading, os
+import time, random, requests, threading, os, re, string
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -6,147 +6,224 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fake_useragent import UserAgent
+from ai_manager import OperationsAI, EvolutionAI
+from proxy_manager import ProxyManager
+from captcha_solver import solve_captcha
+from phone_verification import get_phone_provider
+from dotenv import load_dotenv
+from database_manager import init_db, load_sites, save_sites, write_log_db, get_persona_answer, save_persona_answer, load_accounts
+from worker import Worker
+from utils import get_parser
 
-# Env vars
-API_KEY = os.getenv('OPENROUTER_KEY', '')  # Optional
-WALLET = os.getenv('WALLET', '')
+import json
 
-# Free proxy list
-PROXIES = [
-    'http://103.153.154.170:80', 'http://190.103.177.131:4145', 'http://103.153.155.131:80', 'http://190.103.177.131:80',
-    'http://103.153.154.170:4145', 'http://190.103.177.131:4145', 'http://103.153.155.131:4145', 'http://190.103.177.131:80'
-]
+load_dotenv()
+init_db()
 
-# Sites with paths (2025 verified)
-SITE_PATHS = {
-    "freecash.com": {"signup": "/register", "tasks": "/offers", "withdraw": "/cashout", "min": 0.50},
-    "lootably.com": {"signup": "/authentication/signup", "tasks": "/offers", "withdraw": "/withdraw", "min": 5.00},
-    "surveytime.io": {"signup": "/", "tasks": "/paid-surveys", "withdraw": "/rewards", "min": 1.00},
-    "prizerebel.com": {"signup": "/", "tasks": "/offers", "withdraw": "/redeem", "min": 5.00},
-    "cointiply.com": {"signup": "/", "tasks": "/offers", "withdraw": "/withdraw", "min": 3.00}
-}
+# Load config
+with open("config.json") as f:
+    config = json.load(f)
+
+config["API_KEY"] = os.getenv("API_KEY")
+config["ENCRYPTION_PASSWORD"] = os.getenv("ENCRYPTION_PASSWORD")
+config["TWOCAPTCHA_API_KEY"] = os.getenv("TWOCAPTCHA_API_KEY")
+
+THREADS = config.get("threads", 90)
+THREAD_DELAY = config.get("thread_delay", 10)
+CASHOUT_CHECK_INTERVAL = config.get("cashout_check_interval", 3600)
+CHROMEDRIVER_PATH = config.get("chromedriver_path", "/usr/bin/chromedriver")
+
+# Load sites
+SITE_PATHS = load_sites()
+
+proxy_manager = ProxyManager(config)
+proxy_manager.fetch_proxies()
+proxy_manager.test_proxies()
 
 def get_proxy():
-    return random.choice(PROXIES)
+    return proxy_manager.get_proxy()
 
-def ai_or_random_answer(question):
-    if API_KEY:
-        try:
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                                 headers={"Authorization": f"Bearer {API_KEY}"},
-                                 json={"model": "deepseek/deepseek-r1:free",
-                                       "messages": [{"role": "user", "content": f"1-5 words: {question} Random adult."}],
-                                       "max_tokens": 15}).json()
-            return resp['choices'][0]['message']['content'].strip()
-        except: pass
-    return random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
 
-def create_temp_email():
-    resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
-    data = resp.json()
-    return data['email_addr'], data['sid_token'], data['seq']
 
-def fetch_email_code(sid_token, seq):
-    time.sleep(5)
-    resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}")
-    if resp.json()['list']:
-        mail_id = resp.json()['list'][0]['mail_id']
-        fetch_resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}")
-        body = fetch_resp.json()['email']['body']
-        code = ''.join(c for c in body if c.isdigit())[-6:]
-        return code
-    return str(random.randint(100000, 999999))
-
-def auto_signup(driver, site):
+def load_profiles():
     try:
-        paths = SITE_PATHS[site]
-        driver.get(f"https://{site}{paths['signup']}")
-        wait = WebDriverWait(driver, 15)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
-        email, sid_token, seq = create_temp_email()
-        driver.find_element(By.CSS_SELECTOR, "input[type='email']").send_keys(email)
-        driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys("TempPass123!")
-        driver.find_element(By.CSS_SELECTOR, "input[name*='name']").send_keys(f"User{random.randint(1000,9999)}")
-        driver.find_element(By.XPATH, "//button[contains(text(),'Sign Up')]").click()
-        time.sleep(5)
-        if "verify" in driver.page_source.lower():
-            code = fetch_email_code(sid_token, seq)
-            driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(code)
-            driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
-        print(f"Account created on {site}: {email}")
-        return True
-    except Exception as e:
-        print(f"Signup fail {site}: {e}")
+        with open("profiles.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+def write_log(log_entry):
+    write_log_db(log_entry)
+
+def auto_signup(site, config, profile):
+    """Handles the account creation process for a given site."""
+    parser = get_parser(site)
+    if not parser:
+        print(f"No parser found for {site}")
         return False
 
-def do_tasks(driver, site):
-    paths = SITE_PATHS[site]
-    tasks = 0
-    driver.get(f"https://{site}{paths['tasks']}")
-    time.sleep(10)
-    for _ in range(5):
-        try:
-            btn = driver.find_element(By.XPATH, "//button[contains(text(),'Start') or contains(text(),'Next') or contains(text(),'Play')] | //a[contains(@href,'offer')]")
-            btn.click()
-            time.sleep(random.uniform(10, 25))
-            tasks += 1
-        except:
-            break
-    return tasks
-
-def auto_payout(driver, site):
-    paths = SITE_PATHS[site]
-    min_bal = paths['min']
-    driver.get(f"https://{site}{paths['withdraw']}")
-    time.sleep(10)
+    driver = None
     try:
-        balance_str = driver.find_element(By.CSS_SELECTOR, ".balance, [class*='balance']").text.replace("$", "").strip()
-        balance = float(balance_str) if balance_str.replace(".", "").isdigit() else 0
-        if balance >= min_bal:
-            driver.find_element(By.XPATH, "//button[contains(text(),'Crypto') or contains(text(),'BTC') or contains(text(),'Cash Out')]").click()
-            time.sleep(3)
-            driver.find_element(By.CSS_SELECTOR, "input[placeholder*='address']").send_keys(WALLET)
-            driver.find_element(By.XPATH, "//button[contains(text(),'Withdraw') or contains(text(),'Confirm')]").click()
-            print(f"Payout ${balance} from {site} to {WALLET}")
-            return True
-        print(f"${balance} < ${min_bal} on {site}")
+        proxy = get_proxy()
+        ua = UserAgent()
+        options = Options()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument(f'--user-agent={ua.random}')
+        if proxy: options.add_argument(f'--proxy-server={proxy}')
+        service = Service(config.get("chromedriver_path", "/usr/bin/chromedriver"))
+        driver = webdriver.Chrome(service=service, options=options)
+
+        return parser.auto_signup(driver, config, profile)
+    except (requests.exceptions.RequestException, webdriver.WebDriverException) as e:
+        print(f"A network-related error occurred during signup for {site}: {e}")
+        return False
     except Exception as e:
-        print(f"Payout error {site}: {e}")
-    return False
-
-def run():
-    while True:
-        try:
-            proxy = get_proxy()
-            ua = UserAgent()
-            options = Options()
-            options.add_argument('--headless')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument(f'--user-agent={ua.random}')
-            if proxy: options.add_argument(f'--proxy-server={proxy}')
-            service = Service('/usr/bin/chromedriver')  # Explicit path in Selenium image
-            driver = webdriver.Chrome(service=service, options=options)
-            
-            site = random.choice(list(SITE_PATHS.keys()))
-            print(f"→ Working on {site}")
-            
-            if auto_signup(driver, site):
-                tasks = do_tasks(driver, site)
-                print(f"Completed {tasks} tasks on {site}")
-                auto_payout(driver, site)
-            
+        print(f"An unexpected error occurred during signup for {site}: {e}")
+        return False
+    finally:
+        if driver:
             driver.quit()
-        except Exception as e:
-            print("Error:", e)
-        
-        time.sleep(random.randint(1800, 3600))
 
-print("Starting 90 accounts...")
-for i in range(90):
-    threading.Thread(target=run, daemon=True).start()
-    time.sleep(10)
+class Bot:
+    def __init__(self, config):
+        self.config = config
+        self.operations_ai = OperationsAI(config)
+        self.evolution_ai = self.operations_ai.evolution_ai
+        self.profiles = load_profiles()
+        self.task_queue = []
+        self.workers = []
+        self.last_cashout_check = {}
+        self.running = True
 
-while True:
-    time.sleep(3600)
+    def save_state(self):
+        with open("bot_state.json", "w") as f:
+            json.dump({"task_queue": self.task_queue}, f)
+
+    def load_state(self):
+        try:
+            with open("bot_state.json", "r") as f:
+                state = json.load(f)
+                self.task_queue = state.get("task_queue", [])
+        except FileNotFoundError:
+            pass
+
+    def start(self):
+        self.load_state()
+
+        # Perform initial analysis and optimization
+        site_performance, profile_performance = self.operations_ai.learning_ai.analyze_logs()
+        self.evolution_ai.optimize(site_performance, profile_performance)
+        self.evolution_ai.improve_self(site_performance)
+        self.integrate_new_sites()
+
+        # Start worker threads
+        for i in range(self.config.get("threads", 1)):
+            worker = Worker(self.config, self.operations_ai, self.evolution_ai, proxy_manager)
+            self.workers.append(worker)
+            worker.start()
+            time.sleep(self.config.get("thread_delay", 1))
+
+        # Main loop to manage the task queue and account creation
+        while self.running:
+            if not self.task_queue:
+                self.populate_task_queue()
+
+            self.manage_account_creation()
+
+            # Distribute tasks to workers
+            for worker in self.workers:
+                if not worker.task_queue:
+                    if self.task_queue:
+                        worker.task_queue.append(self.task_queue.pop(0))
+
+            time.sleep(60) # Check for new tasks and accounts every 60 seconds
+
+    def shutdown(self):
+        print("Shutting down bot...")
+        self.running = False
+        for worker in self.workers:
+            worker.stop()
+        for worker in self.workers:
+            worker.join()
+        self.save_state()
+
+    def populate_task_queue(self):
+        all_offers = []
+
+        proxy = get_proxy()
+        ua = UserAgent()
+        options = Options()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument(f'--user-agent={ua.random}')
+        if proxy: options.add_argument(f'--proxy-server={proxy}')
+        service = Service(self.config.get("chromedriver_path", "/usr/bin/chromedriver"))
+        driver = webdriver.Chrome(service=service, options=options)
+
+        for site, site_data in load_sites().items():
+            if site_data.get("status", "enabled") != "enabled":
+                continue
+            try:
+                driver.get(f"https://{site}{site_data['tasks']}")
+                parser = get_parser(site)
+                if parser:
+                    all_offers.extend(parser.find_offers(driver))
+            except (requests.exceptions.RequestException, webdriver.WebDriverException) as e:
+                print(f"A network-related error occurred while populating task queue for {site}: {e}")
+            except Exception as e:
+                print(f"An unexpected error occurred while populating task queue for {site}: {e}")
+
+        driver.quit()
+        self.task_queue = self.operations_ai.manage_tasks(self.profiles, all_offers)
+
+    def integrate_new_sites(self):
+        new_sites = self.operations_ai.learning_ai.innovate()
+        if new_sites:
+            current_sites = load_sites()
+            for site in new_sites:
+                if site not in current_sites:
+                    print(f"Integrating new site: {site}")
+                    # Add with default paths, can be refined by evolution AI later
+                    current_sites[site] = {
+                        "signup": "/register", "login": "/login", "tasks": "/offers",
+                        "withdraw": "/cashout", "min": 1.00, "status": "enabled"
+                    }
+            save_sites(current_sites)
+
+    def manage_account_creation(self):
+        """Checks if new accounts are needed and creates them."""
+        min_accounts = self.config.get("min_accounts_per_site", 5)
+        accounts = load_accounts()
+
+        site_counts = {}
+        for acc in accounts:
+            site_counts[acc["site"]] = site_counts.get(acc["site"], 0) + 1
+
+        for site, site_data in load_sites().items():
+            if site_data.get("status", "enabled") != "enabled":
+                continue
+            if site_counts.get(site, 0) < min_accounts:
+                if not self.profiles:
+                    print("No profiles available to create new accounts.")
+                    return
+                print(f"Site {site} has fewer than {min_accounts} accounts. Creating a new one.")
+                # Run signup in a new thread to avoid blocking the main loop
+                profile = random.choice(self.profiles)
+                signup_thread = threading.Thread(target=auto_signup, args=(site, self.config, profile))
+                signup_thread.start()
+
+if __name__ == "__main__":
+    with open("config.json") as f:
+        config = json.load(f)
+    bot = Bot(config)
+    try:
+        bot.start()
+    except KeyboardInterrupt:
+        print("Caught keyboard interrupt. Shutting down.")
+    finally:
+        bot.shutdown()
