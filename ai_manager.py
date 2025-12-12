@@ -9,6 +9,7 @@ class OperationsAI:
     def __init__(self, config):
         self.config = config
         self.learning_ai = LearningAI(config)
+        self.evolution_ai = EvolutionAI(self.learning_ai)
         self.cooldown_sites = {}
 
     def manage_tasks(self, profiles, offers):
@@ -109,29 +110,32 @@ class LearningAI:
             return json.loads(best_profile_str)
 
     def innovate(self):
-        # Use Google Search to find new survey sites
+        # Scrape a reliable blog for new survey sites
         try:
-            query = "best online survey sites 2024"
-            response = requests.get(f"https://www.google.com/search?q={query}")
+            url = "https://www.savethestudent.org/make-money/best-paid-online-survey-sites.html"
+            response = requests.get(url)
             soup = BeautifulSoup(response.text, 'html.parser')
 
             new_sites = []
-            for link in soup.find_all('a'):
+            for link in soup.select("a.btn.btn-lg"):
                 href = link.get('href')
-                if href and "url?q=" in href and not "google.com" in href:
-                    url = href.split("url?q=")[1].split("&")[0]
-                    domain = url.split("/")[2].replace("www.", "")
-                    if "survey" in domain.lower() or "paid" in domain.lower():
+                if href:
+                    try:
+                        # Follow redirect to get the actual site URL
+                        res = requests.get(f"https://www.savethestudent.org{href}")
+                        domain = res.url.split("/")[2].replace("www.", "")
                         new_sites.append(domain)
+                    except requests.exceptions.RequestException:
+                        continue
 
             return list(set(new_sites)) # Return unique sites
-        except Exception as e:
-            print(f"Error using Google Search for site discovery: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error scraping for new sites: {e}")
             return []
 
 class EvolutionAI:
-    def __init__(self):
-        pass
+    def __init__(self, learning_ai):
+        self.learning_ai = learning_ai
 
     def improve_self(self, site_performance):
         # Adjust action_delay based on the overall success rate
@@ -159,6 +163,21 @@ class EvolutionAI:
                     print(f"EvolutionAI: Autonomously disabled site {site} due to low performance.")
         save_sites(sites)
 
+        # Health check for parsers
+        logs = get_logs()
+        action_failures = {}
+        for log in logs:
+            if not log["success"]:
+                key = (log["site"], log["action"])
+                action_failures[key] = action_failures.get(key, 0) + 1
+
+        for (site, action), failures in action_failures.items():
+            if failures >= 10: # 10 consecutive failures
+                if site in sites and sites[site].get("status", "enabled") == "enabled":
+                    sites[site]["status"] = "maintenance_required"
+                    print(f"EvolutionAI: Site {site} requires maintenance for action {action}.")
+        save_sites(sites)
+
         # Adjust parameters based on overall performance
         total_success = sum([profile_performance[p]["success"] for p in profile_performance])
         total_failure = sum([profile_performance[p]["failure"] for p in profile_performance])
@@ -172,3 +191,6 @@ class EvolutionAI:
             action_delay *= 0.95 # Speed up if overall performance is good
             print(f"EvolutionAI: Increased action speed due to high success rate.")
         set_parameter("action_delay", action_delay)
+
+        # Adapt strategies
+        self.learning_ai.adapt_strategies(profile_performance)

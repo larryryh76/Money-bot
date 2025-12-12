@@ -67,10 +67,11 @@ class Worker(threading.Thread):
 
                 parser = get_parser(site)
                 if parser:
-                    tasks_completed, total_value = parser.do_task(driver, task, account["profile"], account["id"])
+                    tasks_completed, total_value = parser.do_task(driver, task, account["profile"], account["id"], self.config)
                     print(f"Completed {tasks_completed} tasks on {site} for a total of ${total_value:.2f}")
                     log_entry = {
                         "site": site,
+                        "action": "do_task",
                         "timestamp": time.time(),
                         "success": 1,
                         "profile": account["profile"],

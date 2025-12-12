@@ -11,7 +11,7 @@ from proxy_manager import ProxyManager
 from captcha_solver import solve_captcha
 from phone_verification import get_phone_provider
 from dotenv import load_dotenv
-from database_manager import init_db, load_sites, save_sites, write_log_db, get_persona_answer, save_persona_answer
+from database_manager import init_db, load_sites, save_sites, write_log_db, get_persona_answer, save_persona_answer, load_accounts
 from worker import Worker
 from utils import get_parser
 
@@ -43,52 +43,6 @@ proxy_manager.test_proxies()
 def get_proxy():
     return proxy_manager.get_proxy()
 
-def ai_or_random_answer(account_id, question, context="", options=None, profile=None):
-    # Check if we have answered this question before for this account
-    previous_answer = get_persona_answer(account_id, question)
-    if previous_answer:
-        return previous_answer
-
-    # If not, generate a new answer
-    if config["API_KEY"]:
-        try:
-            profile_str = json.dumps(profile) if profile else ""
-            if options:
-                prompt = f"Profile: {profile_str}\n\nContext: {context}\n\nQuestion: {question}\n\nOptions: {', '.join(options)}\n\nSelect the best option based on the profile."
-            else:
-                prompt = f"Profile: {profile_str}\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words based on the profile."
-
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                                 headers={"Authorization": f"Bearer {config['API_KEY']}"},
-                                 json={"model": config.get("ai_model", "deepseek/deepseek-r1:free"),
-                                       "messages": [{"role": "user", "content": prompt}],
-                                       "max_tokens": 15}).json()
-            answer = resp['choices'][0]['message']['content'].strip()
-            save_persona_answer(account_id, question, answer)
-            return answer
-        except requests.exceptions.RequestException as e:
-            print(f"Error calling OpenRouter API: {e}")
-
-    # Fallback to random answer
-    answer = random.choice(options) if options else random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
-    save_persona_answer(account_id, question, answer)
-    return answer
-
-def create_temp_email():
-    resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
-    data = resp.json()
-    return data['email_addr'], data['sid_token'], data['seq']
-
-def fetch_email_code(sid_token, seq):
-    time.sleep(5)
-    resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}")
-    if resp.json()['list']:
-        mail_id = resp.json()['list'][0]['mail_id']
-        fetch_resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}")
-        body = fetch_resp.json()['email']['body']
-        code = ''.join(c for c in body if c.isdigit())[-6:]
-        return code
-    return str(random.randint(100000, 999999))
 
 
 def load_profiles():
@@ -137,7 +91,7 @@ class Bot:
     def __init__(self, config):
         self.config = config
         self.operations_ai = OperationsAI(config)
-        self.evolution_ai = EvolutionAI()
+        self.evolution_ai = self.operations_ai.evolution_ai
         self.profiles = load_profiles()
         self.task_queue = []
         self.workers = []
@@ -212,7 +166,7 @@ class Bot:
         driver = webdriver.Chrome(service=service, options=options)
 
         for site, site_data in load_sites().items():
-            if site_data.get("status", "enabled") == "disabled":
+            if site_data.get("status", "enabled") != "enabled":
                 continue
             try:
                 driver.get(f"https://{site}{site_data['tasks']}")
@@ -250,7 +204,9 @@ class Bot:
         for acc in accounts:
             site_counts[acc["site"]] = site_counts.get(acc["site"], 0) + 1
 
-        for site in load_sites():
+        for site, site_data in load_sites().items():
+            if site_data.get("status", "enabled") != "enabled":
+                continue
             if site_counts.get(site, 0) < min_accounts:
                 if not self.profiles:
                     print("No profiles available to create new accounts.")

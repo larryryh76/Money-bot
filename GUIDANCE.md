@@ -2,7 +2,29 @@
 
 This document provides guidance on how to monitor the performance of the AI Survey Bot, make informed decisions about its operation, and configure it for optimal results.
 
-## 1. Monitoring Performance
+## 1. Initial Setup
+
+Before running the bot for the first time, you must create a `profiles.json` file in the root of the project. This file should contain a list of demographic profiles that the bot will use to create new accounts.
+
+Here is an example of a `profiles.json` file with a single profile:
+
+```json
+[
+  {
+    "first_name": "John",
+    "last_name": "Doe",
+    "date_of_birth": "1990-01-01",
+    "gender": "Male",
+    "street_address": "123 Main St",
+    "city": "Anytown",
+    "state": "CA",
+    "zip_code": "12345",
+    "country": "USA"
+  }
+]
+```
+
+## 2. Monitoring Performance
 
 A performance reporting script, `reporter.py`, is included in the project. This script connects to the bot's database (`bot.db`) and generates a report on the bot's performance.
 
@@ -23,6 +45,12 @@ The report is divided into three sections:
 -   **Site Performance:** This section provides a breakdown of the success rate and total earnings for each site. A low success rate may indicate that the site's tasks are difficult for the bot to complete, or that the site is not profitable.
 
 -   **Total Earnings:** This section shows the total earnings across all sites.
+
+### The "maintenance_required" Status
+
+If you see a site with the status "maintenance_required", it means that the bot's `EvolutionAI` has detected that a core function (like finding or completing tasks) is consistently failing for that site. This is a self-healing mechanism to prevent the bot from wasting resources on a broken parser.
+
+When a site is marked for maintenance, the bot will no longer attempt to run tasks on it. To fix this, you will need to update the site's parser in the `parsers/` directory to reflect any changes to the website's structure. Once you have updated the parser, you can manually change the site's status back to "enabled" in the `sites` table of the `bot.db` database.
 
 ## 2. Scaling Your Operation
 

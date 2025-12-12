@@ -29,6 +29,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY,
             site TEXT,
+            action TEXT,
             timestamp REAL,
             success INTEGER,
             profile TEXT,
@@ -105,8 +106,8 @@ def load_accounts():
 def write_log_db(log_entry):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
-    c.execute("INSERT INTO logs (site, timestamp, success, profile, value) VALUES (?, ?, ?, ?, ?)",
-              (log_entry['site'], log_entry['timestamp'], log_entry['success'], json.dumps(log_entry['profile']), log_entry.get('value', 0)))
+    c.execute("INSERT INTO logs (site, action, timestamp, success, profile, value) VALUES (?, ?, ?, ?, ?, ?)",
+              (log_entry['site'], log_entry['action'], log_entry['timestamp'], log_entry['success'], json.dumps(log_entry['profile']), log_entry.get('value', 0)))
     conn.commit()
     conn.close()
 
@@ -161,15 +162,16 @@ def get_persona_answer(account_id, question):
 def get_logs():
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
-    c.execute("SELECT site, timestamp, success, profile, value FROM logs")
+    c.execute("SELECT site, action, timestamp, success, profile, value FROM logs")
     logs = []
     for row in c.fetchall():
         logs.append({
             "site": row[0],
-            "timestamp": row[1],
-            "success": row[2],
-            "profile": json.loads(row[3]),
-            "value": row[4]
+            "action": row[1],
+            "timestamp": row[2],
+            "success": row[3],
+            "profile": json.loads(row[4]),
+            "value": row[5]
         })
     conn.close()
     return logs
