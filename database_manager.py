@@ -70,6 +70,14 @@ def init_db():
         )
     ''')
 
+    # Create recipes table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS recipes (
+            site TEXT PRIMARY KEY,
+            recipe TEXT
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -188,5 +196,20 @@ def set_parameter(key, value):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO parameters (key, value) VALUES (?, ?)", (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+def get_recipe(site):
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    c.execute("SELECT recipe FROM recipes WHERE site = ?", (site,))
+    row = c.fetchone()
+    conn.close()
+    return json.loads(row[0]) if row else None
+
+def save_recipe(site, recipe):
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO recipes (site, recipe) VALUES (?, ?)", (site, json.dumps(recipe)))
     conn.commit()
     conn.close()

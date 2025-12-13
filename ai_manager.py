@@ -3,13 +3,45 @@ import json
 import time
 import requests
 from bs4 import BeautifulSoup
-from database_manager import load_accounts, get_logs, get_parameter, set_parameter, save_sites, load_sites
+from database_manager import load_accounts, get_logs, get_parameter, set_parameter, save_sites, load_sites, save_recipe
+
+class ArchitectAI:
+    def __init__(self, config):
+        self.config = config
+
+    def generate_recipe(self, site, html):
+        prompt = f"""
+        Analyze the following HTML from {site} and generate a JSON recipe for a GenericParser.
+        The recipe should define the steps for 'auto_signup'.
+        The JSON should be a dictionary with keys for each action. Each action is a list of steps.
+        Each step is a dictionary with 'command', 'target' (e.g., 'id=element_id', 'css=.class'), and optional 'value'.
+        Available commands: 'get', 'click', 'send_keys'.
+        For 'send_keys', use placeholder values like '{{email}}', '{{password}}', '{{username}}'.
+
+        HTML:
+        {html}
+        """
+
+        try:
+            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                                 headers={"Authorization": f"Bearer {self.config.get('api_key')}"},
+                                 json={"model": self.config.get("ai_model", "deepseek/deepseek-r1:free"),
+                                       "messages": [{"role": "user", "content": prompt}],
+                                       "max_tokens": 1024}).json()
+            recipe_str = resp['choices'][0]['message']['content'].strip()
+            recipe = json.loads(recipe_str)
+            save_recipe(site, recipe)
+            return recipe
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            print(f"Error generating recipe for {site}: {e}")
+            return None
 
 class OperationsAI:
     def __init__(self, config):
         self.config = config
         self.learning_ai = LearningAI(config)
         self.evolution_ai = EvolutionAI(self.learning_ai)
+        self.architect_ai = ArchitectAI(config)
         self.cooldown_sites = {}
 
     def manage_tasks(self, profiles, offers):
