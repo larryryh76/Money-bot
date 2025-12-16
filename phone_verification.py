@@ -42,15 +42,18 @@ class OnlineSimProvider(BasePhoneProvider):
             return None
 
 def get_phone_provider(config):
-    providers = config.get("providers", {})
-    provider_name = providers.get("phone_verification")
-    api_key = providers.get("onlinesim_api_key")
+    providers_config = config.get("providers", {}).get("phone_verification", [])
+    for provider_config in providers_config:
+        provider_name = provider_config.get("name")
+        api_key = provider_config.get("api_key")
 
-    if provider_name == "onlinesim.ru":
-        if not api_key:
-            print("onlinesim.ru API key is missing from config.")
-            return None
-        return OnlineSimProvider(api_key)
-    else:
-        print(f"Phone verification provider '{provider_name}' is not supported.")
-        return None
+        if provider_name == "onlinesim.ru":
+            if not api_key:
+                print("onlinesim.ru API key is missing from config.")
+                continue
+            return OnlineSimProvider(api_key)
+        else:
+            print(f"Phone verification provider '{provider_name}' is not supported.")
+
+    print("Failed to initialize any phone verification provider.")
+    return None

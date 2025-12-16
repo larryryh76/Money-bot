@@ -11,9 +11,9 @@ from proxy_manager import ProxyManager
 from captcha_solver import solve_captcha
 from phone_verification import get_phone_provider
 from dotenv import load_dotenv
-from database_manager import init_db, load_sites, save_sites, write_log_db, get_persona_answer, save_persona_answer, load_accounts
+from database_manager import init_db, load_sites, save_sites, load_accounts
 from worker import Worker
-from utils import get_parser
+from utils import get_parser, get_proxy, load_profiles, write_log, auto_signup
 
 import json
 
@@ -39,53 +39,6 @@ SITE_PATHS = load_sites()
 proxy_manager = ProxyManager(config)
 proxy_manager.fetch_proxies()
 proxy_manager.test_proxies()
-
-def get_proxy():
-    return proxy_manager.get_proxy()
-
-
-
-def load_profiles():
-    try:
-        with open("profiles.json", "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
-
-def write_log(log_entry):
-    write_log_db(log_entry)
-
-def auto_signup(site, config, profile):
-    """Handles the account creation process for a given site."""
-    parser = get_parser(site)
-    if not parser:
-        print(f"No parser found for {site}")
-        return False
-
-    driver = None
-    try:
-        proxy = get_proxy()
-        ua = UserAgent()
-        options = Options()
-        options.add_argument('--headless')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument(f'--user-agent={ua.random}')
-        if proxy: options.add_argument(f'--proxy-server={proxy}')
-        service = Service(config.get("chromedriver_path", "/usr/bin/chromedriver"))
-        driver = webdriver.Chrome(service=service, options=options)
-
-        return parser.auto_signup(driver, config, profile)
-    except (requests.exceptions.RequestException, webdriver.WebDriverException) as e:
-        print(f"A network-related error occurred during signup for {site}: {e}")
-        return False
-    except Exception as e:
-        print(f"An unexpected error occurred during signup for {site}: {e}")
-        return False
-    finally:
-        if driver:
-            driver.quit()
 
 class Bot:
     def __init__(self, config):
@@ -153,7 +106,7 @@ class Bot:
     def populate_task_queue(self):
         all_offers = []
 
-        proxy = get_proxy()
+        proxy = get_proxy(proxy_manager)
         ua = UserAgent()
         options = Options()
         options.add_argument('--headless')
@@ -214,7 +167,7 @@ class Bot:
                 print(f"Site {site} has fewer than {min_accounts} accounts. Creating a new one.")
                 # Run signup in a new thread to avoid blocking the main loop
                 profile = random.choice(self.profiles)
-                signup_thread = threading.Thread(target=auto_signup, args=(site, self.config, profile))
+                signup_thread = threading.Thread(target=auto_signup, args=(site, self.config, profile, proxy_manager))
                 signup_thread.start()
 
 if __name__ == "__main__":
