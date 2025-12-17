@@ -1,12 +1,13 @@
 import time
 import random
+import threading
+import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from fake_useragent import UserAgent
-from database_manager import load_accounts, save_accounts, write_log_db
+from database_manager import update_account_status, write_log_db
 from utils import get_parser
-import threading
 
 class Worker(threading.Thread):
     def __init__(self, config, operations_ai, evolution_ai, proxy_manager):
@@ -17,24 +18,25 @@ class Worker(threading.Thread):
         self.proxy_manager = proxy_manager
         self.task_queue = []
         self.running = True
+        self.accounts = []
 
     def stop(self):
         self.running = False
+
+    def set_accounts(self, accounts):
+        self.accounts = accounts
 
     def run(self):
         while self.running:
             try:
                 if not self.task_queue:
-                    # The task queue is now managed by the main Bot class
                     time.sleep(1)
                     continue
 
                 task = self.task_queue.pop(0)
                 site = task["site"]
 
-                # Get an account for this site
-                accounts = load_accounts()
-                account = next((acc for acc in accounts if acc["site"] == site and acc["status"] == "active"), None)
+                account = next((acc for acc in self.accounts if acc["site"] == site and acc["status"] == "active"), None)
 
                 if not account:
                     continue
@@ -52,51 +54,37 @@ class Worker(threading.Thread):
                 options.add_argument(f'--user-agent={ua.random}')
                 if proxy: options.add_argument(f'--proxy-server={proxy}')
 
-                # Anti-detection measures
-                options.add_experimental_option('prefs', {'webrtc.ip_handling_policy': 'disable_non_proxied_udp',
-                                                           'webrtc.multiple_routes_enabled': False,
-                                                           'webrtc.nonproxied_udp_enabled': False})
-                options.add_argument('--disable-blink-features=AutomationControlled')
-                options.add_argument('--disable-infobars')
-
                 service = Service(self.config.get("chromedriver_path", "/usr/bin/chromedriver"))
                 driver = webdriver.Chrome(service=service, options=options)
 
-                # Spoof navigator.webdriver
                 driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
                 parser = get_parser(site)
+                new_status = "active"
                 if parser:
                     tasks_completed, total_value = parser.do_task(driver, task, account["profile"], account["id"], self.config)
-                    print(f"Completed {tasks_completed} tasks on {site} for a total of ${total_value:.2f}")
-                    log_entry = {
-                        "site": site,
-                        "action": "do_task",
-                        "timestamp": time.time(),
-                        "success": 1,
-                        "profile": account["profile"],
-                        "value": total_value
-                    }
-                    write_log_db(log_entry)
-                    account["status"] = "active"
+                    if tasks_completed > 0:
+                        log_entry = {
+                            "site": site, "action": "do_task", "timestamp": time.time(),
+                            "success": 1, "profile": account["profile"], "value": total_value
+                        }
+                        write_log_db(log_entry)
+                    else:
+                        new_status = "flagged"
                 else:
-                    print(f"No parser found for {site}")
-                    account["status"] = "error"
+                    new_status = "error"
 
-                # Payout logic should be handled by the payout_scheduler, so we remove it from the worker.
+                update_account_status(account["id"], new_status)
+                account["status"] = new_status
 
-                # Update the account status in the database
-                for i, acc in enumerate(accounts):
-                    if acc["email"] == account["email"] and acc["site"] == site:
-                        accounts[i] = account
-                        break
-                save_accounts(accounts)
-
-                driver.quit()
             except (requests.exceptions.RequestException, webdriver.WebDriverException) as e:
                 print(f"A network-related error occurred in a worker thread: {e}")
+                if 'account' in locals() and account:
+                    update_account_status(account["id"], "error")
             except Exception as e:
                 print(f"An unexpected error occurred in a worker thread: {e}")
+                if 'account' in locals() and account:
+                    update_account_status(account["id"], "error")
             finally:
                 if 'driver' in locals() and driver:
                     driver.quit()

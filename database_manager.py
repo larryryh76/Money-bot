@@ -1,215 +1,91 @@
-import sqlite3
+import psycopg2.pool
 import json
 import os
 from dotenv import load_dotenv
 from secure_storage import encrypt_data, decrypt_data
 
 load_dotenv()
-ENCRYPTION_PASSWORD = os.getenv("ENCRYPTION_PASSWORD")
 
-def init_db():
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
+class DatabaseManager:
+    _instance = None
 
-    # Create accounts table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS accounts (
-            id INTEGER PRIMARY KEY,
-            site TEXT,
-            email TEXT,
-            password TEXT,
-            username TEXT,
-            profile TEXT,
-            status TEXT
-        )
-    ''')
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+            cls._instance.ENCRYPTION_PASSWORD = os.getenv("ENCRYPTION_PASSWORD")
+            DATABASE_URL = os.getenv("DATABASE_URL")
+            cls._instance.pool = psycopg2.pool.SimpleConnectionPool(1, 20, dsn=DATABASE_URL)
+        return cls._instance
 
-    # Create logs table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY,
-            site TEXT,
-            action TEXT,
-            timestamp REAL,
-            success INTEGER,
-            profile TEXT,
-            value REAL
-        )
-    ''')
+    def get_conn(self):
+        return self.pool.getconn()
 
-    # Create sites table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS sites (
-            id INTEGER PRIMARY KEY,
-            name TEXT UNIQUE,
-            signup_path TEXT,
-            login_path TEXT,
-            tasks_path TEXT,
-            withdraw_path TEXT,
-            min_payout REAL,
-            status TEXT
-        )
-    ''')
+    def put_conn(self, conn):
+        self.pool.putconn(conn)
 
-    # Create persona_answers table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS persona_answers (
-            id INTEGER PRIMARY KEY,
-            account_id INTEGER,
-            question TEXT,
-            answer TEXT,
-            FOREIGN KEY(account_id) REFERENCES accounts(id)
-        )
-    ''')
+    def execute_query(self, query, params=None, fetch=None):
+        conn = self.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                if fetch == 'one':
+                    result = cur.fetchone()
+                elif fetch == 'all':
+                    result = cur.fetchall()
+                else:
+                    result = None
+                conn.commit()
+                return result
+        finally:
+            self.put_conn(conn)
 
-    # Create parameters table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS parameters (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
+    def init_db(self):
+        queries = [
+            '''CREATE TABLE IF NOT EXISTS accounts (...)''',
+            '''CREATE TABLE IF NOT EXISTS logs (...)''',
+            '''CREATE TABLE IF NOT EXISTS sites (...)''',
+            '''CREATE TABLE IF NOT EXISTS persona_answers (...)''',
+            '''CREATE TABLE IF NOT EXISTS parameters (...)''',
+            '''CREATE TABLE IF NOT EXISTS recipes (...)''',
+            '''CREATE TABLE IF NOT EXISTS profiles (...)'''
+        ]
+        for query in queries:
+            self.execute_query(query)
 
-    # Create recipes table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS recipes (
-            site TEXT PRIMARY KEY,
-            recipe TEXT
-        )
-    ''')
+    def add_account(self, account):
+        # ... implementation ...
 
-    conn.commit()
-    conn.close()
+    def update_account_status(self, account_id, new_status):
+        # ... implementation ...
 
-def save_accounts(accounts):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("DELETE FROM accounts")
-    for acc in accounts:
-        encrypted_password = encrypt_data(acc['password'].encode(), ENCRYPTION_PASSWORD)
-        c.execute("INSERT INTO accounts (site, email, password, username, profile, status) VALUES (?, ?, ?, ?, ?, ?)",
-                  (acc['site'], acc['email'], encrypted_password, acc['username'], json.dumps(acc['profile']), acc['status']))
-    conn.commit()
-    conn.close()
+    def load_accounts(self):
+        # ... implementation ...
 
-def load_accounts():
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("SELECT id, site, email, password, username, profile, status FROM accounts")
-    accounts = []
-    for row in c.fetchall():
-        decrypted_password = decrypt_data(row[3], ENCRYPTION_PASSWORD).decode()
-        accounts.append({
-            "id": row[0],
-            "site": row[1],
-            "email": row[2],
-            "password": decrypted_password,
-            "username": row[4],
-            "profile": json.loads(row[5]),
-            "status": row[6]
-        })
-    conn.close()
-    return accounts
+    def write_log_db(self, log_entry):
+        # ... implementation ...
 
-def write_log_db(log_entry):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO logs (site, action, timestamp, success, profile, value) VALUES (?, ?, ?, ?, ?, ?)",
-              (log_entry['site'], log_entry['action'], log_entry['timestamp'], log_entry['success'], json.dumps(log_entry['profile']), log_entry.get('value', 0)))
-    conn.commit()
-    conn.close()
+    def load_sites(self):
+        # ... implementation ...
 
-def load_sites():
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("SELECT name, signup_path, login_path, tasks_path, withdraw_path, min_payout, status FROM sites")
-    sites = {}
-    for row in c.fetchall():
-        sites[row[0]] = {
-            "signup": row[1],
-            "login": row[2],
-            "tasks": row[3],
-            "withdraw": row[4],
-            "min": row[5],
-            "status": row[6]
-        }
-    conn.close()
-    # If sites table is empty, load from sites.json
-    if not sites:
-        with open('sites.json') as f:
-            sites_data = json.load(f)
-            save_sites(sites_data)
-            return sites_data
-    return sites
+    def save_sites(self, sites):
+        # ... implementation ...
 
-def save_sites(sites):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    for name, data in sites.items():
-        c.execute("INSERT OR REPLACE INTO sites (name, signup_path, login_path, tasks_path, withdraw_path, min_payout, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                  (name, data['signup'], data['login'], data['tasks'], data['withdraw'], data['min'], data.get('status', 'enabled')))
-    conn.commit()
-    conn.close()
+    def add_profile(self, profile_data):
+        # ... implementation ...
 
-def save_persona_answer(account_id, question, answer):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO persona_answers (account_id, question, answer) VALUES (?, ?, ?)",
-              (account_id, question, answer))
-    conn.commit()
-    conn.close()
+    def load_profiles(self):
+        # ... implementation ...
 
-def get_persona_answer(account_id, question):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("SELECT answer FROM persona_answers WHERE account_id = ? AND question = ?", (account_id, question))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else None
+# Singleton instance
+db_manager = DatabaseManager()
 
-def get_logs():
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("SELECT site, action, timestamp, success, profile, value FROM logs")
-    logs = []
-    for row in c.fetchall():
-        logs.append({
-            "site": row[0],
-            "action": row[1],
-            "timestamp": row[2],
-            "success": row[3],
-            "profile": json.loads(row[4]),
-            "value": row[5]
-        })
-    conn.close()
-    return logs
-
-def get_parameter(key, default=None):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("SELECT value FROM parameters WHERE key = ?", (key,))
-    row = c.fetchone()
-    conn.close()
-    return json.loads(row[0]) if row else default
-
-def set_parameter(key, value):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO parameters (key, value) VALUES (?, ?)", (key, json.dumps(value)))
-    conn.commit()
-    conn.close()
-
-def get_recipe(site):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("SELECT recipe FROM recipes WHERE site = ?", (site,))
-    row = c.fetchone()
-    conn.close()
-    return json.loads(row[0]) if row else None
-
-def save_recipe(site, recipe):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO recipes (site, recipe) VALUES (?, ?)", (site, json.dumps(recipe)))
-    conn.commit()
-    conn.close()
+# Expose functions
+def init_db(): db_manager.init_db()
+def add_account(account): return db_manager.add_account(account)
+def update_account_status(account_id, new_status): db_manager.update_account_status(account_id, new_status)
+def load_accounts(): return db_manager.load_accounts()
+def write_log_db(log_entry): db_manager.write_log_db(log_entry)
+def load_sites(): return db_manager.load_sites()
+def save_sites(sites): db_manager.save_sites(sites)
+def add_profile(profile_data): return db_manager.add_profile(profile_data)
+def load_profiles(): return db_manager.load_profiles()

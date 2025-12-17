@@ -3,7 +3,7 @@ import requests
 import time
 import json
 import random
-from database_manager import write_log_db
+from database_manager import write_log_db, add_account
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -83,11 +83,14 @@ def write_log(log_entry):
     write_log_db(log_entry)
 
 def auto_signup(site, config, profile, proxy_manager):
-    """Handles the account creation process for a given site."""
+    """
+    Handles the account creation process for a given site.
+    This function is executed in a thread and must be self-contained and thread-safe.
+    """
     parser = get_parser(site)
     if not parser:
         print(f"No parser found for {site}")
-        return False
+        return
 
     driver = None
     try:
@@ -103,13 +106,22 @@ def auto_signup(site, config, profile, proxy_manager):
         service = Service(config.get("chromedriver_path", "/usr/bin/chromedriver"))
         driver = webdriver.Chrome(service=service, options=options)
 
-        return parser.auto_signup(driver, config, profile)
+        # The parser's auto_signup method should return a dictionary with the new account's details
+        new_account = parser.auto_signup(driver, config, profile)
+
+        if new_account:
+            # Add the new account to the database using the thread-safe function
+            new_account['site'] = site
+            new_account['profile'] = profile
+            account_id = add_account(new_account)
+            print(f"Successfully created and saved new account for {site} with ID: {account_id}")
+        else:
+            print(f"Account creation failed for {site}.")
+
     except (requests.exceptions.RequestException, webdriver.WebDriverException) as e:
         print(f"A network-related error occurred during signup for {site}: {e}")
-        return False
     except Exception as e:
         print(f"An unexpected error occurred during signup for {site}: {e}")
-        return False
     finally:
         if driver:
             driver.quit()

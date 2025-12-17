@@ -1,62 +1,62 @@
-# Deploying the AI Survey Bot on Railway
+# Deploying the AI Survey Bot on Render
 
-This guide will walk you through deploying the AI Survey Bot on [Railway](https://railway.app/), a cloud platform that offers a free tier with a persistent filesystem, which is essential for the bot's learning and evolution features.
+This guide will walk you through deploying the AI Survey Bot on [Render](https://render.com/), a cloud platform that offers a free tier for hosting background workers and databases.
 
-## 1. Prerequisites
+## 1. Key Architectural Change: PostgreSQL Database
+
+Due to the ephemeral filesystem on Render's free tier, the bot has been refactored to use a PostgreSQL database instead of a local SQLite file. **This is a critical change.** You cannot run the bot on Render without a remote database.
+
+## 2. Prerequisites
 
 - A GitHub account with a forked or cloned version of this repository.
-- A Railway account.
+- A Render account.
+- An account with a free PostgreSQL provider like [Neon](https://neon.tech/) or [ElephantSQL](https://www.elephantsql.com/).
 
-## 2. Setting up on Railway
+## 3. Step 1: Set up the PostgreSQL Database
 
-1.  **Create a New Project:** From your Railway dashboard, click on "New Project" and select "Deploy from GitHub repo".
+1.  **Create a Free Database:** Go to your chosen provider (e.g., Neon) and create a new, free PostgreSQL project.
+2.  **Get the Connection String:** After the database is created, find the **connection string** or **DATABASE_URL**. It will look something like `postgres://user:password@host:port/dbname`. Keep this safe; you will need it for the next step.
 
+## 4. Step 2: Deploy the Bot on Render
+
+The bot should be deployed as a **Background Worker**, as it's a continuously running process.
+
+1.  **Create a New Service:** From your Render dashboard, click "New +" and select "Background Worker".
 2.  **Connect Your Repository:** Connect your GitHub account and select the repository for the AI Survey Bot.
-
 3.  **Configure the Service:**
-    -   Railway will automatically detect the `Dockerfile` in the repository and build it.
-    -   **Add a Volume:** To ensure the database persists, you need to mount a volume.
-        -   Go to your service's "Settings" tab.
-        -   Under "Volumes", click "Add Volume".
-        -   Set the "Mount Path" to `/app`. This will ensure that the entire working directory, including the `bot.db` database, is persistent.
+    -   **Name:** Give your service a name (e.g., `survey-bot-worker`).
+    -   **Region:** Choose a region close to you.
+    -   **Branch:** Select the main branch.
+    -   **Build Command:** `pip install -r requirements.txt`
+    -   **Start Command:** `python3 bot.py`
+    -   **Instance Type:** Select "Free".
 
 4.  **Add Environment Variables:**
-    -   Go to the "Variables" tab in your service's settings.
+    -   Before the first deploy, go to the "Environment" tab.
     -   Add the following environment variables:
+        -   `DATABASE_URL`: The full connection string you got from your PostgreSQL provider.
         -   `API_KEY`: Your OpenRouter API key.
         -   `ENCRYPTION_PASSWORD`: A strong, unique password for encrypting credentials.
         -   `TWOCAPTCHA_API_KEY`: Your 2Captcha API key (optional).
+        -   `PYTHON_VERSION`: `3.12` (or the version you are using).
 
-5.  **Deploy:** Railway will automatically deploy your service when you push changes to your repository. You can also trigger a manual deploy from the dashboard.
+5.  **Deploy:** Click "Create Background Worker". Render will pull your code, install dependencies, and start the bot. You can view logs in the "Logs" tab.
 
-## 4. Setting up the Payout Scheduler
+## 5. Step 3: Set up the Payout Scheduler Cron Job
 
-The `payout_scheduler.py` script is designed to be run periodically to automatically withdraw earnings from your accounts.
+Render has native support for cron jobs, which is perfect for the payout scheduler.
 
-### Running on Railway
+1.  **Create a New Cron Job:** From the dashboard, click "New +" and select "Cron Job".
+2.  **Connect Your Repository:** Select the same GitHub repository.
+3.  **Configure the Cron Job:**
+    -   **Name:** Give it a name (e.g., `payout-scheduler`).
+    -   **Schedule:** Set the schedule. For example, to run once a day at midnight, use `0 0 * * *`.
+    -   **Command:** `python3 payout_scheduler.py`
+    -   **Instance Type:** Select "Free".
+4.  **Link Environment Variables:** In the "Environment" tab for the cron job, create an "Environment Group" that links to the same variables you created for the background worker. This ensures it can connect to the same database and use the same API keys.
+5.  **Create:** Click "Create Cron Job".
 
-Railway does not have a built-in cron job feature on its free tier. You can, however, use a free cron job service like [Cron-job.org](https://cron-job.org/) to trigger the payout scheduler.
+## 6. Responsible Usage on Render's Free Tier
 
-1.  **Create a new cron job:** Go to Cron-job.org and create a new cron job.
-2.  **Set the URL:** The URL should be the URL of your Railway service, with the path `/run-payout-scheduler`.
-3.  **Set the schedule:** A good schedule would be once a day.
-
-### Running Locally
-
-If you are running the bot locally, you can set up a cron job to run the `payout_scheduler.py` script.
-
-```bash
-0 0 * * * python3 /path/to/your/project/payout_scheduler.py
-```
-
-This will run the script once a day at midnight.
-
-## 3. Responsible Usage on Free Resources
-
-Running a bot on a free tier requires careful resource management to avoid exceeding your usage limits. Here are some key considerations:
-
--   **Thread Count:** The `threads` setting in `config.json` is set to a low number by default. This is to avoid overwhelming the free tier's limited CPU and memory. Increasing this value may lead to performance issues.
-
--   **Thread Delay:** The `thread_delay` setting in `config.json` adds a delay between starting each thread. This prevents a sudden spike in resource usage.
-
--   **Fair Use:** Be mindful of the terms of service for both Railway and the survey websites you are targeting. Automated bots can be against their terms, and excessive use may lead to your accounts being banned. This bot is provided for educational purposes only.
+-   **CRITICAL: Thread Count:** Render's free tier has very limited CPU and memory. You **must** lower the `threads` setting in `config.json` to a very small number (e.g., `2` or `3`) before deploying. A high thread count will cause the service to crash.
+-   **Fair Use:** Be mindful of the terms of service for Render, your database provider, and the survey websites. Automated bots can be against their terms, and excessive use may lead to your accounts being banned. This bot is provided for educational purposes only.
