@@ -19,31 +19,73 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
-    try:
-        response = requests.get("https://free-proxy-list.net/")
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"Failed to fetch proxies: {e}")
-    return proxies
+class ProxyManager:
+    def __init__(self):
+        self.proxies = []
+        self.lock = threading.Lock()
+        # ⚡ OPTIMIZATION: Event to signal when the first proxy fetch is complete.
+        # This prevents a race condition where worker threads start before any proxies are available.
+        self.initial_fetch_done = threading.Event()
 
-PROXIES = fetch_proxies()
+    def _fetch_proxies(self):
+        # ⚡ OPTIMIZATION: Fetches a list of proxies and updates the internal list.
+        # This is a blocking I/O operation, so it's run in a separate thread
+        # to avoid blocking the main application startup.
+        print("Fetching new proxy list...")
+        new_proxies = []
+        try:
+            response = requests.get("https://free-proxy-list.net/")
+            soup = BeautifulSoup(response.text, "html.parser")
+            table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                ip = tds[0].text.strip()
+                port = tds[1].text.strip()
+                new_proxies.append(f"http://{ip}:{port}")
+        except Exception as e:
+            print(f"Failed to fetch proxies: {e}")
+        finally:
+            # ⚡ OPTIMIZATION: Always ensure the event is set after the first attempt.
+            # This prevents a deadlock if the initial fetch fails; workers can proceed without proxies.
+            if not self.initial_fetch_done.is_set():
+                self.initial_fetch_done.set()
+
+        with self.lock:
+            self.proxies = new_proxies
+
+        if new_proxies:
+            print(f"Fetched {len(self.proxies)} new proxies.")
+
+
+    def _refresh_proxies_periodically(self, interval=3600):
+        # Periodically fetches proxies to keep the list fresh.
+        while True:
+            self._fetch_proxies()
+            time.sleep(interval)
+
+    def get_proxy(self):
+        # Returns a random proxy from the list in a thread-safe manner.
+        with self.lock:
+            if self.proxies:
+                return random.choice(self.proxies)
+        return None
+
+    def wait_for_initial_proxies(self):
+        """Blocks until the initial proxy list has been fetched."""
+        print("Worker waiting for initial proxy list...")
+        self.initial_fetch_done.wait()
+        print("Initial proxy list received. Worker starting.")
+
+    def start(self):
+        # Starts the background thread for refreshing proxies.
+        # The thread is a daemon, so it won't block program exit.
+        refresh_thread = threading.Thread(target=self._refresh_proxies_periodically, daemon=True)
+        refresh_thread.start()
+
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -181,13 +223,17 @@ def auto_payout(driver, site):
     return False
 
 class Bot:
-    def __init__(self):
-        pass
+    def __init__(self, proxy_manager):
+        self.proxy_manager = proxy_manager
 
     def run(self):
+        # ⚡ OPTIMIZATION: Wait for the initial proxy list to be fetched.
+        # This ensures that worker threads do not start their tasks without a proxy.
+        self.proxy_manager.wait_for_initial_proxies()
+
         while True:
             try:
-                proxy = get_proxy()
+                proxy = self.proxy_manager.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -214,6 +260,10 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        # Start the proxy manager's background refresh thread.
+        self.proxy_manager.start()
+        print("Proxy manager started.")
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
@@ -223,5 +273,6 @@ class Bot:
             time.sleep(3600)
 
 if __name__ == "__main__":
-    bot = Bot()
+    proxy_manager = ProxyManager()
+    bot = Bot(proxy_manager)
     bot.start()
