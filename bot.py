@@ -19,31 +19,56 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
-    try:
-        response = requests.get("https://free-proxy-list.net/")
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"Failed to fetch proxies: {e}")
-    return proxies
+class ProxyManager:
+    def __init__(self):
+        self.proxies = []
+        self.proxies_ready = threading.Event()
+        self.lock = threading.Lock()
 
-PROXIES = fetch_proxies()
+    def _fetch_proxies_thread(self):
+        try:
+            print("Fetching proxies in the background...")
+            response = requests.get("https://free-proxy-list.net/")
+            soup = BeautifulSoup(response.text, "html.parser")
+            table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+            new_proxies = []
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                ip = tds[0].text.strip()
+                port = tds[1].text.strip()
+                new_proxies.append(f"http://{ip}:{port}")
+
+            with self.lock:
+                self.proxies = new_proxies
+
+            if new_proxies:
+                print(f"Successfully fetched {len(new_proxies)} proxies.")
+            else:
+                print("Warning: No proxies were fetched.")
+
+        except Exception as e:
+            print(f"Failed to fetch proxies: {e}")
+        finally:
+            # Signal that the fetch attempt is complete, regardless of success
+            self.proxies_ready.set()
+
+    def start(self):
+        # Running proxy fetching in a background thread to not block the main app
+        fetch_thread = threading.Thread(target=self._fetch_proxies_thread)
+        fetch_thread.daemon = True
+        fetch_thread.start()
+
+    def get_proxy(self):
+        # Wait for proxies to be fetched, with a timeout to avoid indefinite blocking
+        self.proxies_ready.wait(timeout=120)
+        with self.lock:
+            if self.proxies:
+                return random.choice(self.proxies)
+        return None
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -182,12 +207,12 @@ def auto_payout(driver, site):
 
 class Bot:
     def __init__(self):
-        pass
+        self.proxy_manager = ProxyManager()
 
     def run(self):
         while True:
             try:
-                proxy = get_proxy()
+                proxy = self.proxy_manager.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -214,10 +239,15 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        # Start fetching proxies in the background
+        self.proxy_manager.start()
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # Stagger thread creation slightly to avoid overwhelming services at startup.
+            # Reduced from 10s to 0.5s to cut startup time from 15 mins to 45 secs for 90 threads.
+            time.sleep(0.5)
 
         while True:
             time.sleep(3600)
