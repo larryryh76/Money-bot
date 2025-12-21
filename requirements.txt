@@ -7,3 +7,4 @@ python-dotenv==0.21.0
 cryptography==42.0.5
 psycopg2-binary
 redis
+humancursor
