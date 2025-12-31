@@ -19,31 +19,52 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
-    try:
-        response = requests.get("https://free-proxy-list.net/")
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"Failed to fetch proxies: {e}")
-    return proxies
+# --- Performance Optimization by Bolt ---
+# The ProxyManager fetches proxies in a background thread to avoid blocking the main application at startup.
+# This significantly reduces the initial startup time.
+class ProxyManager:
+    def __init__(self):
+        self.proxies = []
+        # A threading.Event to signal when proxies are loaded and ready.
+        self.proxies_ready = threading.Event()
 
-PROXIES = fetch_proxies()
+    def fetch_proxies_threaded(self):
+        """Fetches proxies and sets an event when done."""
+        try:
+            print("Fetching proxies in the background...")
+            response = requests.get("https://free-proxy-list.net/")
+            soup = BeautifulSoup(response.text, "html.parser")
+            table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                ip = tds[0].text.strip()
+                port = tds[1].text.strip()
+                self.proxies.append(f"http://{ip}:{port}")
+            if self.proxies:
+                print(f"Successfully fetched {len(self.proxies)} proxies.")
+            else:
+                print("Warning: No proxies were fetched.")
+        except Exception as e:
+            print(f"Failed to fetch proxies: {e}")
+        finally:
+            # Signal that fetching is complete, regardless of success.
+            # This prevents the bot from waiting indefinitely if proxy fetching fails.
+            self.proxies_ready.set()
+
+    def start_fetching(self):
+        """Starts the proxy fetching in a background thread."""
+        threading.Thread(target=self.fetch_proxies_threaded, daemon=True).start()
+
+    def get_proxy(self):
+        """Waits for proxies to be ready and returns a random one."""
+        self.proxies_ready.wait()  # Blocks until the proxies_ready event is set.
+        if self.proxies:
+            return random.choice(self.proxies)
+        return None
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -181,13 +202,13 @@ def auto_payout(driver, site):
     return False
 
 class Bot:
-    def __init__(self):
-        pass
+    def __init__(self, proxy_manager):
+        self.proxy_manager = proxy_manager
 
     def run(self):
         while True:
             try:
-                proxy = get_proxy()
+                proxy = self.proxy_manager.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -214,14 +235,20 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        self.proxy_manager.start_fetching()
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # --- Performance Optimization by Bolt ---
+            # Reduced sleep from 10s to 0.1s. The original 10s sleep caused a massive
+            # startup delay (90 threads * 10s = 15 minutes). This small delay
+            # is a safeguard against overwhelming services at startup.
+            time.sleep(0.1)
 
         while True:
             time.sleep(3600)
 
 if __name__ == "__main__":
-    bot = Bot()
+    proxy_manager = ProxyManager()
+    bot = Bot(proxy_manager)
     bot.start()
