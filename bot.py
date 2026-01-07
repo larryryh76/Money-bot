@@ -19,31 +19,50 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
-    try:
-        response = requests.get("https://free-proxy-list.net/")
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"Failed to fetch proxies: {e}")
-    return proxies
+class ProxyManager:
+    def __init__(self):
+        self.proxies = []
+        self.ready = threading.Event()
+        self.lock = threading.Lock()
+        self.fetch_thread = threading.Thread(target=self._fetch_proxies_periodically, daemon=True)
+        self.fetch_thread.start()
 
-PROXIES = fetch_proxies()
+    def _fetch_proxies(self):
+        try:
+            response = requests.get("https://free-proxy-list.net/")
+            soup = BeautifulSoup(response.text, "html.parser")
+            table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+            new_proxies = []
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                ip = tds[0].text.strip()
+                port = tds[1].text.strip()
+                new_proxies.append(f"http://{ip}:{port}")
+            with self.lock:
+                self.proxies = new_proxies
+            if not self.ready.is_set():
+                self.ready.set()
+        except Exception as e:
+            print(f"Failed to fetch proxies: {e}")
+        finally:
+            if not self.ready.is_set():
+                self.ready.set()
+
+    def _fetch_proxies_periodically(self):
+        while True:
+            self._fetch_proxies()
+            time.sleep(3600)
+
+    def get_proxy(self):
+        self.ready.wait()
+        with self.lock:
+            if self.proxies:
+                return random.choice(self.proxies)
+        return None
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -181,13 +200,13 @@ def auto_payout(driver, site):
     return False
 
 class Bot:
-    def __init__(self):
-        pass
+    def __init__(self, proxy_manager):
+        self.proxy_manager = proxy_manager
 
     def run(self):
         while True:
             try:
-                proxy = get_proxy()
+                proxy = self.proxy_manager.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -217,11 +236,12 @@ class Bot:
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            time.sleep(0.5)  # Prevents overwhelming services at startup
 
         while True:
             time.sleep(3600)
 
 if __name__ == "__main__":
-    bot = Bot()
+    proxy_manager = ProxyManager()
+    bot = Bot(proxy_manager)
     bot.start()
