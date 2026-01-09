@@ -5,28 +5,124 @@
     "withdraw": "/cashout",
     "min": 0.50
   },
-  "lootably.com": {
-    "signup": "/authentication/signup",
-    "tasks": "/offers",
-    "withdraw": "/withdraw",
+  "swagbucks.com": {
+    "signup": "/register",
+    "tasks": "/discover",
+    "withdraw": "/redeem",
     "min": 5.00
   },
-  "surveytime.io": {
-    "signup": "/",
-    "tasks": "/paid-surveys",
+  "onepoll.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/account",
+    "min": 20.00
+  },
+  "toluna.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
     "withdraw": "/rewards",
-    "min": 1.00
+    "min": 10.00
+  },
+  "yougov.com": {
+    "signup": "/join",
+    "tasks": "/surveys",
+    "withdraw": "/account",
+    "min": 50.00
+  },
+  "inboxpounds.co.uk": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 15.00
+  },
+  "pineconeresearch.com": {
+    "signup": "/signup",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 7.60
+  },
+  "valuedopinions.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 10.00
+  },
+  "prolific.co": {
+    "signup": "/register",
+    "tasks": "/studies",
+    "withdraw": "/account",
+    "min": 6.00
+  },
+  "opinionoutpost.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 2.50
   },
   "prizerebel.com": {
-    "signup": "/",
+    "signup": "/register",
     "tasks": "/offers",
     "withdraw": "/redeem",
     "min": 5.00
   },
-  "cointiply.com": {
-    "signup": "/",
+  "branded-surveys.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 5.00
+  },
+  "qmee.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/cashout",
+    "min": 0.01
+  },
+  "surveyjunkie.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 5.00
+  },
+  "mobrog.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 5.00
+  },
+  "lifepointspanel.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 5.00
+  },
+  "ysense.com": {
+    "signup": "/register",
     "tasks": "/offers",
-    "withdraw": "/withdraw",
+    "withdraw": "/cashout",
+    "min": 10.00
+  },
+  "vindale.com": {
+    "signup": "/register",
+    "tasks": "/surveys",
+    "withdraw": "/rewards",
+    "min": 50.00
+  },
+  "instagc.com": {
+    "signup": "/register",
+    "tasks": "/offers",
+    "withdraw": "/redeem",
+    "min": 1.00
+  },
+  "grabpoints.com": {
+    "signup": "/register",
+    "tasks": "/offers",
+    "withdraw": "/redeem",
     "min": 3.00
+  },
+  "featurepoints.com": {
+    "signup": "/register",
+    "tasks": "/offers",
+    "withdraw": "/rewards",
+    "min": 5.00
   }
 }
