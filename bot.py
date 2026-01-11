@@ -17,33 +17,11 @@ API_KEY = config.get("api_key", "")
 WALLET = config.get("wallet", "")
 THREADS = config.get("threads", 90)
 
-from bs4 import BeautifulSoup
-
-def fetch_proxies():
-    proxies = []
-    try:
-        response = requests.get("https://free-proxy-list.net/")
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"Failed to fetch proxies: {e}")
-    return proxies
-
-PROXIES = fetch_proxies()
+from proxy_manager import ProxyManager
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -181,13 +159,13 @@ def auto_payout(driver, site):
     return False
 
 class Bot:
-    def __init__(self):
-        pass
+    def __init__(self, proxy_manager):
+        self.proxy_manager = proxy_manager
 
     def run(self):
         while True:
             try:
-                proxy = get_proxy()
+                proxy = self.proxy_manager.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -214,14 +192,23 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        print("Waiting for proxies to be ready...")
+        self.proxy_manager.proxies_ready.wait() # Wait for the first proxy fetch
+        print("Proxies are ready, starting threads...")
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # Optimization: Reduced sleep from 10s to 0.1s.
+            # The original 10s sleep per thread caused a 15-minute startup delay for 90 threads.
+            # This small delay is a safeguard against overwhelming services at startup.
+            time.sleep(0.1)
 
         while True:
             time.sleep(3600)
 
 if __name__ == "__main__":
-    bot = Bot()
+    proxy_manager = ProxyManager()
+    proxy_manager.start()
+    bot = Bot(proxy_manager)
     bot.start()
