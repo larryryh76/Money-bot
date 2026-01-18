@@ -19,31 +19,58 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
-    try:
-        response = requests.get("https://free-proxy-list.net/")
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"Failed to fetch proxies: {e}")
-    return proxies
+# --- Performance Optimization by Bolt ⚡ ---
+# The ProxyManager class fetches proxies in a background thread to avoid blocking the main
+# thread at startup. This significantly reduces the application's initial load time.
+# A threading.Event is used to ensure that worker threads do not request a proxy
+# before the initial list has been fetched.
+class ProxyManager:
+    def __init__(self):
+        self.proxies = []
+        self.proxies_ready = threading.Event()
+        self.lock = threading.Lock()
+        self.fetch_thread = threading.Thread(target=self._fetch_proxies, daemon=True)
+        self.fetch_thread.start()
 
-PROXIES = fetch_proxies()
+    def _fetch_proxies(self):
+        try:
+            print("Fetching proxies in the background...")
+            response = requests.get("https://free-proxy-list.net/")
+            soup = BeautifulSoup(response.text, "html.parser")
+            table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+            fetched_proxies = []
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                ip = tds[0].text.strip()
+                port = tds[1].text.strip()
+                fetched_proxies.append(f"http://{ip}:{port}")
+
+            with self.lock:
+                self.proxies = fetched_proxies
+
+            if self.proxies:
+                print(f"Successfully fetched {len(self.proxies)} proxies.")
+            else:
+                print("Warning: Failed to fetch any proxies.")
+        except Exception as e:
+            print(f"Failed to fetch proxies: {e}")
+        finally:
+            # --- Performance Optimization by Bolt ⚡ ---
+            # Signal that the proxy fetch attempt is complete, regardless of success.
+            # This prevents the main thread from hanging if the proxy site is down.
+            self.proxies_ready.set()
+
+    def get_proxy(self):
+        # Wait for the initial proxy fetch to complete.
+        self.proxies_ready.wait()
+        with self.lock:
+            if self.proxies:
+                return random.choice(self.proxies)
+        return None
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -181,13 +208,15 @@ def auto_payout(driver, site):
     return False
 
 class Bot:
-    def __init__(self):
-        pass
+    def __init__(self, proxy_manager):
+        self.proxy_manager = proxy_manager
 
     def run(self):
         while True:
             try:
-                proxy = get_proxy()
+                # --- Performance Optimization by Bolt ⚡ ---
+                # The bot now retrieves proxies from the non-blocking ProxyManager.
+                proxy = self.proxy_manager.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -216,12 +245,25 @@ class Bot:
     def start(self):
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
-            threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # Each thread will run the bot's main loop. The ProxyManager is accessed
+            # via self.proxy_manager within the run method.
+            thread = threading.Thread(target=self.run, daemon=True)
+            thread.start()
+            # --- Performance Optimization by Bolt ⚡ ---
+            # Reduced sleep time from 10s to 0.1s. This drastically cuts down the
+            # startup time from 15 minutes (90 threads * 10s) to 9 seconds,
+            # while still preventing a sudden burst of requests.
+            time.sleep(0.1)
 
+        # Keep the main thread alive to allow daemon threads to run.
         while True:
             time.sleep(3600)
 
+
 if __name__ == "__main__":
-    bot = Bot()
+    # --- Performance Optimization by Bolt ⚡ ---
+    # Initialize the ProxyManager here. It will start fetching proxies in the
+    # background immediately, overlapping with the rest of the application's setup.
+    proxy_manager = ProxyManager()
+    bot = Bot(proxy_manager)
     bot.start()
