@@ -19,8 +19,15 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
+# Global list to hold proxies and an event to signal when they are ready
+PROXIES = []
+proxies_ready = threading.Event()
+
+def fetch_proxies_threaded():
+    """
+    Fetches proxies in a background thread and sets an event when done.
+    This is a performance optimization to prevent blocking the main thread at startup.
+    """
     try:
         response = requests.get("https://free-proxy-list.net/")
         soup = BeautifulSoup(response.text, "html.parser")
@@ -29,12 +36,13 @@ def fetch_proxies():
             tds = row.find_all("td")
             ip = tds[0].text.strip()
             port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
+            PROXIES.append(f"http://{ip}:{port}")
     except Exception as e:
         print(f"Failed to fetch proxies: {e}")
-    return proxies
-
-PROXIES = fetch_proxies()
+    finally:
+        # ⚡ Optimization: Signal that proxies are ready, even if fetching failed.
+        # This prevents the application from hanging indefinitely if the proxy site is down.
+        proxies_ready.set()
 
 # Load sites
 with open("sites.json") as f:
@@ -185,6 +193,10 @@ class Bot:
         pass
 
     def run(self):
+        # ⚡ Optimization: Wait until proxies are fetched before starting.
+        # This prevents threads from starting without proxies if the fetch is slow.
+        proxies_ready.wait()
+
         while True:
             try:
                 proxy = get_proxy()
@@ -214,10 +226,16 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        # ⚡ Optimization: Start fetching proxies in a background thread.
+        threading.Thread(target=fetch_proxies_threaded, daemon=True).start()
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # ⚡ Optimization: Reduced sleep from 10s to 0.1s.
+            # This prevents a massive startup delay when creating many threads.
+            # A small delay is kept as a safeguard against overwhelming services.
+            time.sleep(0.1)
 
         while True:
             time.sleep(3600)
