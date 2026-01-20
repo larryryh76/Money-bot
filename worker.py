@@ -20,6 +20,7 @@ class Worker:
         with open("config.json") as f:
             config = json.load(f)
         self.wallet = config.get("wallet", "")
+        self.dry_run = config.get("dry_run", False)
         self.available_parsers = self.discover_parsers()
 
     def discover_parsers(self):
@@ -82,7 +83,8 @@ class Worker:
                         driver=driver,
                         api_key=self.api_key,
                         wallet=self.wallet,
-                        config=self.sites[site_name]
+                        config=self.sites[site_name],
+                        dry_run=self.dry_run
                     )
 
                     if account[4] == 'new': # status
