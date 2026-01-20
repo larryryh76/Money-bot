@@ -1,0 +1,2 @@
+# Add your high-quality proxies here, one per line
+# Example: http://user:pass@host:port
