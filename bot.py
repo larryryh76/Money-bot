@@ -19,22 +19,33 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
+PROXIES = []
+proxies_ready = threading.Event()
+
+def fetch_proxies_threaded():
+    """
+    Fetches proxies in a background thread to avoid blocking startup.
+    Sets a threading event when done.
+    """
+    global PROXIES
     try:
         response = requests.get("https://free-proxy-list.net/")
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+        fetched_proxies = []
         for row in table.find_all("tr")[1:]:
             tds = row.find_all("td")
             ip = tds[0].text.strip()
             port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
+            fetched_proxies.append(f"http://{ip}:{port}")
+        PROXIES = fetched_proxies
+        print(f"Successfully fetched {len(PROXIES)} proxies.")
     except Exception as e:
         print(f"Failed to fetch proxies: {e}")
-    return proxies
+    finally:
+        # Ensure the event is set even if the proxy fetch fails
+        proxies_ready.set()
 
-PROXIES = fetch_proxies()
 
 # Load sites
 with open("sites.json") as f:
@@ -187,6 +198,9 @@ class Bot:
     def run(self):
         while True:
             try:
+                # ⚡ Optimization: Wait for proxies to be fetched before starting a worker.
+                # This prevents workers from starting without proxies if the fetch is slow.
+                proxies_ready.wait()
                 proxy = get_proxy()
                 ua = UserAgent()
                 options = Options()
@@ -215,9 +229,15 @@ class Bot:
 
     def start(self):
         print(f"Starting {THREADS} accounts...")
+        # ⚡ Optimization: Start proxy fetching in a background thread
+        threading.Thread(target=fetch_proxies_threaded, daemon=True).start()
+
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # ⚡ Optimization: Drastically reduced sleep from 10s to 0.1s.
+            # The original 10s sleep caused a 15-minute startup delay for 90 threads.
+            # This small delay is a safeguard against overwhelming services at startup.
+            time.sleep(0.1)
 
         while True:
             time.sleep(3600)
