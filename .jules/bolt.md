@@ -1,0 +1,5 @@
+## 2024-07-24 - Synchronous I/O Blocks Application Startup
+
+**Learning:** Placing synchronous, long-running I/O operations (like the initial `fetch_proxies` network call) directly in the application's startup path is a major performance anti-pattern. It blocks the main thread, preventing any other work from happening and creating significant, unnecessary startup delays. In this case, it delayed the start of all worker threads until the proxy list was fully loaded.
+
+**Action:** Always move long-running I/O operations at startup to a background thread. Use a synchronization primitive, like `threading.Event`, to signal completion and ensure dependent threads don't access the resource before it's ready. This allows the application to initialize concurrently, drastically reducing startup time. Always add a timeout to network requests to prevent them from hanging indefinitely.
