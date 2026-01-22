@@ -19,31 +19,9 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
-    try:
-        response = requests.get("https://free-proxy-list.net/")
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
-    except Exception as e:
-        print(f"Failed to fetch proxies: {e}")
-    return proxies
-
-PROXIES = fetch_proxies()
-
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -182,12 +160,48 @@ def auto_payout(driver, site):
 
 class Bot:
     def __init__(self):
-        pass
+        # BOLT ⚡: Use a threading.Event to prevent workers from starting before proxies are loaded.
+        self.proxies_ready = threading.Event()
+        self.proxies = []
+        # BOLT ⚡: Start proxy fetching in a background thread to avoid blocking startup.
+        threading.Thread(target=self._fetch_proxies_threaded, daemon=True).start()
+
+    def _fetch_proxies_threaded(self):
+        """
+        BOLT ⚡: Fetches proxies in a background thread and sets an event when complete.
+        This prevents the main thread from blocking on network I/O at startup.
+        A timeout is added to prevent the request from hanging indefinitely.
+        """
+        try:
+            # BOLT ⚡: Added a 15-second timeout to prevent indefinite hanging.
+            response = requests.get("https://free-proxy-list.net/", timeout=15)
+            soup = BeautifulSoup(response.text, "html.parser")
+            table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                ip = tds[0].text.strip()
+                port = tds[1].text.strip()
+                self.proxies.append(f"http://{ip}:{port}")
+            print(f"Successfully fetched {len(self.proxies)} proxies.")
+        except Exception as e:
+            print(f"Failed to fetch proxies: {e}")
+        finally:
+            # BOLT ⚡: Crucial step! Ensure the event is set even if proxy fetching fails.
+            # This prevents the worker threads from waiting forever.
+            self.proxies_ready.set()
+
+    def get_proxy(self):
+        # BOLT ⚡: Wait for the proxies_ready event before trying to access the proxy list.
+        self.proxies_ready.wait()
+        if self.proxies:
+            return random.choice(self.proxies)
+        return None
 
     def run(self):
         while True:
             try:
-                proxy = get_proxy()
+                # BOLT ⚡: Replaced global get_proxy() with instance method.
+                proxy = self.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -215,10 +229,18 @@ class Bot:
 
     def start(self):
         print(f"Starting {THREADS} accounts...")
+        threads = []
         for i in range(THREADS):
-            threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            thread = threading.Thread(target=self.run, daemon=True)
+            threads.append(thread)
+            thread.start()
+            # BOLT ⚡: Drastically reduced sleep from 10s to 0.1s.
+            # The original 10s sleep caused a 15-minute startup delay for 90 threads.
+            # This small delay is a safeguard against overwhelming services at startup.
+            time.sleep(0.1)
 
+        # The main thread needs to stay alive for daemon threads to run.
+        # Using join() on workers is not an option as they are infinite loops.
         while True:
             time.sleep(3600)
 
