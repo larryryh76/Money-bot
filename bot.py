@@ -19,22 +19,44 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
+# Global list to hold proxies and an event to signal when they are ready
+PROXIES = []
+proxies_ready = threading.Event()
+
 def fetch_proxies():
-    proxies = []
+    """Fetches proxies from free-proxy-list.net."""
+    local_proxies = []
     try:
-        response = requests.get("https://free-proxy-list.net/")
+        # Add a timeout to the request to prevent it from hanging indefinitely
+        response = requests.get("https://free-proxy-list.net/", timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
         for row in table.find_all("tr")[1:]:
             tds = row.find_all("td")
             ip = tds[0].text.strip()
             port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
+            local_proxies.append(f"http://{ip}:{port}")
     except Exception as e:
         print(f"Failed to fetch proxies: {e}")
-    return proxies
+    return local_proxies
 
-PROXIES = fetch_proxies()
+def fetch_proxies_threaded():
+    """
+    Target function for background thread. Fetches proxies and sets an event.
+    A try...finally block ensures the event is set even if proxy fetching fails,
+    preventing the application from hanging.
+    """
+    global PROXIES
+    try:
+        print("Fetching proxies in background...")
+        PROXIES = fetch_proxies()
+        if PROXIES:
+            print(f"Successfully fetched {len(PROXIES)} proxies.")
+        else:
+            print("Warning: No proxies were fetched. The application will run without them.")
+    finally:
+        # Signal that the proxy fetching process is complete, regardless of success
+        proxies_ready.set()
 
 # Load sites
 with open("sites.json") as f:
@@ -182,9 +204,12 @@ def auto_payout(driver, site):
 
 class Bot:
     def __init__(self):
-        pass
+        # Start fetching proxies in a background thread so it doesn't block the main thread
+        threading.Thread(target=fetch_proxies_threaded, daemon=True).start()
 
     def run(self):
+        # Wait until the proxies are fetched before starting the bot's work
+        proxies_ready.wait()
         while True:
             try:
                 proxy = get_proxy()
@@ -217,8 +242,11 @@ class Bot:
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # Reduced sleep time from 10 to 0.1 to dramatically speed up startup
+            # A small delay is still useful to prevent overwhelming services at startup
+            time.sleep(0.1)
 
+        # Keep the main thread alive because the workers are daemon threads
         while True:
             time.sleep(3600)
 
