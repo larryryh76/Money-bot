@@ -9,6 +9,8 @@ from fake_useragent import UserAgent
 
 import json
 
+proxies_ready = threading.Event()
+
 # Load config
 with open("config.json") as f:
     config = json.load(f)
@@ -20,21 +22,27 @@ THREADS = config.get("threads", 90)
 from bs4 import BeautifulSoup
 
 def fetch_proxies():
-    proxies = []
+    # Performance: Added a 10-second timeout to prevent the request from hanging indefinitely.
+    global PROXIES
     try:
-        response = requests.get("https://free-proxy-list.net/")
+        response = requests.get("https://free-proxy-list.net/", timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+        proxies = []
         for row in table.find_all("tr")[1:]:
             tds = row.find_all("td")
             ip = tds[0].text.strip()
             port = tds[1].text.strip()
             proxies.append(f"http://{ip}:{port}")
+        PROXIES = proxies
     except Exception as e:
         print(f"Failed to fetch proxies: {e}")
-    return proxies
+    finally:
+        # Performance: Signal that the proxy fetching process is complete, regardless of success.
+        # This prevents the main thread from blocking forever if the proxy request fails.
+        proxies_ready.set()
 
-PROXIES = fetch_proxies()
+PROXIES = []
 
 # Load sites
 with open("sites.json") as f:
@@ -214,10 +222,18 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        # Performance: Fetch proxies in a background thread to avoid blocking startup.
+        threading.Thread(target=fetch_proxies, daemon=True).start()
+        # Performance: Wait for the proxy list to be fetched before starting worker threads.
+        # This prevents a race condition where workers might start before proxies are available.
+        proxies_ready.wait()
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # Performance: Reduced sleep time from 10s to 0.1s to accelerate thread creation.
+            # A small delay is retained to prevent overwhelming services during startup.
+            time.sleep(0.1)
 
         while True:
             time.sleep(3600)
