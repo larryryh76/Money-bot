@@ -19,31 +19,31 @@ THREADS = config.get("threads", 90)
 
 from bs4 import BeautifulSoup
 
-def fetch_proxies():
-    proxies = []
+def fetch_proxies(proxies_list, proxies_ready):
+    """
+    Fetches proxies from free-proxy-list.net and populates the given list.
+    Signals the event when done.
+    """
     try:
-        response = requests.get("https://free-proxy-list.net/")
+        # Optimization: Use a timeout to prevent hanging on network requests.
+        response = requests.get("https://free-proxy-list.net/", timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
         for row in table.find_all("tr")[1:]:
             tds = row.find_all("td")
             ip = tds[0].text.strip()
             port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
+            proxies_list.append(f"http://{ip}:{port}")
     except Exception as e:
         print(f"Failed to fetch proxies: {e}")
-    return proxies
-
-PROXIES = fetch_proxies()
+    finally:
+        # Optimization: Signal that the proxy fetching is complete, even if it fails.
+        # This prevents the main thread from waiting indefinitely.
+        proxies_ready.set()
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
-
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
 
 def ai_or_random_answer(question, context="", options=None):
     if API_KEY:
@@ -182,12 +182,21 @@ def auto_payout(driver, site):
 
 class Bot:
     def __init__(self):
-        pass
+        self.proxies = []
+        self.proxies_ready = threading.Event()
+
+    def get_proxy(self):
+        # This is now a method of the Bot class to access instance variables.
+        if self.proxies:
+            return random.choice(self.proxies)
+        return None
 
     def run(self):
+        # Optimization: Wait for proxies to be fetched before starting the main loop.
+        self.proxies_ready.wait()
         while True:
             try:
-                proxy = get_proxy()
+                proxy = self.get_proxy()
                 ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
@@ -214,11 +223,18 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        # Optimization: Start fetching proxies in a background thread so it doesn't block the main application.
+        proxy_thread = threading.Thread(target=fetch_proxies, args=(self.proxies, self.proxies_ready), daemon=True)
+        proxy_thread.start()
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # Optimization: Drastically reduce the sleep time between thread creation.
+            # A small delay is kept to prevent overwhelming the system at startup.
+            time.sleep(0.1)
 
+        # Keep the main thread alive to allow daemon threads to run.
         while True:
             time.sleep(3600)
 
