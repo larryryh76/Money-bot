@@ -1,0 +1,3 @@
+## 2024-07-22 - Synchronous I/O Blocks Startup
+**Learning:** The application's startup was severely bottlenecked by two issues: a synchronous network request (`fetch_proxies`) on the main thread and a long, static `time.sleep(10)` inside the thread creation loop. Together, these blocked initialization for over 15 minutes.
+**Action:** Always move blocking I/O operations to a background thread. Use a signaling mechanism like `threading.Event` to coordinate between the main thread and worker threads, ensuring resources are ready before they are accessed. Replace long static sleeps in loops with minimal, non-blocking delays where necessary.
