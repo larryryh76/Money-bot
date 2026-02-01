@@ -1,13 +1,18 @@
-import time, random, requests, threading, os
+import json
+import random
+import threading
+import time
+
+import requests
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+from requests.adapters import HTTPAdapter
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from fake_useragent import UserAgent
-
-import json
 
 # Load config
 with open("config.json") as f:
@@ -17,24 +22,44 @@ API_KEY = config.get("api_key", "")
 WALLET = config.get("wallet", "")
 THREADS = config.get("threads", 90)
 
-from bs4 import BeautifulSoup
+# Initialize shared session for connection pooling
+session = requests.Session()
+adapter = HTTPAdapter(pool_connections=THREADS, pool_maxsize=THREADS)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+DEFAULT_TIMEOUT = 30
 
 def fetch_proxies():
     proxies = []
     try:
-        response = requests.get("https://free-proxy-list.net/")
+        response = session.get("https://free-proxy-list.net/", timeout=DEFAULT_TIMEOUT)
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
+        if table:
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                if len(tds) >= 2:
+                    ip = tds[0].text.strip()
+                    port = tds[1].text.strip()
+                    proxies.append(f"http://{ip}:{port}")
     except Exception as e:
         print(f"Failed to fetch proxies: {e}")
     return proxies
 
-PROXIES = fetch_proxies()
+PROXIES = []
+proxies_ready = threading.Event()
+
+def update_proxies_loop():
+    global PROXIES
+    while True:
+        try:
+            new_proxies = fetch_proxies()
+            if new_proxies:
+                PROXIES = new_proxies
+                print(f"Proxy list updated: {len(PROXIES)} proxies available.")
+        finally:
+            proxies_ready.set()
+        time.sleep(1800)
 
 # Load sites
 with open("sites.json") as f:
@@ -53,11 +78,12 @@ def ai_or_random_answer(question, context="", options=None):
             else:
                 prompt = f"Context: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words as a random adult."
 
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            resp = session.post("https://openrouter.ai/api/v1/chat/completions",
                                  headers={"Authorization": f"Bearer {API_KEY}"},
                                  json={"model": "deepseek/deepseek-r1:free",
                                        "messages": [{"role": "user", "content": prompt}],
-                                       "max_tokens": 15}).json()
+                                       "max_tokens": 15},
+                                 timeout=DEFAULT_TIMEOUT).json()
             return resp['choices'][0]['message']['content'].strip()
         except requests.exceptions.RequestException as e:
             print(f"Error calling OpenRouter API: {e}")
@@ -67,16 +93,16 @@ def ai_or_random_answer(question, context="", options=None):
     return random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
 
 def create_temp_email():
-    resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
+    resp = session.get("https://api.guerrillamail.com/ajax.php?f=get_email_address", timeout=DEFAULT_TIMEOUT)
     data = resp.json()
     return data['email_addr'], data['sid_token'], data['seq']
 
 def fetch_email_code(sid_token, seq):
     time.sleep(5)
-    resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}")
+    resp = session.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}", timeout=DEFAULT_TIMEOUT)
     if resp.json()['list']:
         mail_id = resp.json()['list'][0]['mail_id']
-        fetch_resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}")
+        fetch_resp = session.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}", timeout=DEFAULT_TIMEOUT)
         body = fetch_resp.json()['email']['body']
         code = ''.join(c for c in body if c.isdigit())[-6:]
         return code
@@ -123,7 +149,7 @@ def do_tasks(driver, site):
                     input_field = question_element.find_element(By.XPATH, "./following::input[@type='text'] | ./following::textarea")
                     answer = ai_or_random_answer(question_text, context)
                     input_field.send_keys(answer)
-                except:
+                except Exception:
                     try:
                         # Multiple choice
                         option_elements = question_element.find_elements(By.XPATH, "./following::input[@type='radio'] | ./following::input[@type='checkbox']")
@@ -133,7 +159,7 @@ def do_tasks(driver, site):
                             if opt.find_element(By.XPATH, "./following-sibling::label").text == answer:
                                 opt.click()
                                 break
-                    except:
+                    except Exception:
                         try:
                             # Dropdown
                             select = question_element.find_element(By.XPATH, "./following::select")
@@ -144,7 +170,7 @@ def do_tasks(driver, site):
                                 if opt.text == answer:
                                     opt.click()
                                     break
-                        except:
+                        except Exception:
                             pass
                 time.sleep(1)
 
@@ -182,21 +208,25 @@ def auto_payout(driver, site):
 
 class Bot:
     def __init__(self):
-        pass
+        self.ua = UserAgent()
 
     def run(self):
+        proxies_ready.wait()
+        # Initial jitter to stagger worker start times further
+        time.sleep(random.uniform(1, 10))
         while True:
             try:
                 proxy = get_proxy()
-                ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
                 options.add_argument('--no-sandbox')
                 options.add_argument('--disable-dev-shm-usage')
                 options.add_argument('--disable-gpu')
-                options.add_argument(f'--user-agent={ua.random}')
-                if proxy: options.add_argument(f'--proxy-server={proxy}')
-                service = Service('/usr/bin/chromedriver')  # Explicit path in Selenium image
+                options.add_argument(f'--user-agent={self.ua.random}')
+                if proxy:
+                    options.add_argument(f'--proxy-server={proxy}')
+                # Use default service to allow Selenium Manager to handle driver location
+                service = Service()
                 driver = webdriver.Chrome(service=service, options=options)
 
                 site = random.choice(list(SITE_PATHS.keys()))
@@ -214,10 +244,15 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
-        print(f"Starting {THREADS} accounts...")
+        print("Starting background proxy manager...")
+        threading.Thread(target=update_proxies_loop, daemon=True).start()
+
+        print(f"Starting {THREADS} accounts with staggered delay...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # Reduced from 10s to 1s for faster startup,
+            # while still avoiding massive resource spikes
+            time.sleep(1.0)
 
         while True:
             time.sleep(3600)
