@@ -1,4 +1,11 @@
-import time, random, requests, threading, os
+import json
+import random
+import threading
+import time
+
+import requests
+from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -6,8 +13,6 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fake_useragent import UserAgent
-
-import json
 
 # Load config
 with open("config.json") as f:
@@ -17,24 +22,53 @@ API_KEY = config.get("api_key", "")
 WALLET = config.get("wallet", "")
 THREADS = config.get("threads", 90)
 
-from bs4 import BeautifulSoup
+# Initialize a shared requests session for connection pooling
+# IMPACT: Using a shared session with an HTTPAdapter avoids the overhead of
+# creating new TCP/TLS connections for every request, improving network latency.
+session = requests.Session()
+adapter = HTTPAdapter(pool_connections=THREADS, pool_maxsize=THREADS)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
 
 def fetch_proxies():
     proxies = []
     try:
-        response = requests.get("https://free-proxy-list.net/")
+        # IMPACT: Using connection pooling for proxy fetching reduces latency.
+        response = session.get("https://free-proxy-list.net/", timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
-        for row in table.find_all("tr")[1:]:
-            tds = row.find_all("td")
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            proxies.append(f"http://{ip}:{port}")
+        if table:
+            for row in table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                if len(tds) >= 2:
+                    ip = tds[0].text.strip()
+                    port = tds[1].text.strip()
+                    proxies.append(f"http://{ip}:{port}")
     except Exception as e:
         print(f"Failed to fetch proxies: {e}")
     return proxies
 
-PROXIES = fetch_proxies()
+PROXIES = []
+proxy_ready = threading.Event()
+
+def background_proxy_refresh():
+    """
+    Background thread to periodically refresh the proxy list.
+    IMPACT: Prevents the main thread from blocking on network I/O during startup
+    and ensures the bot always has access to fresh proxies.
+    """
+    global PROXIES
+    while True:
+        print("Refreshing proxies...")
+        new_proxies = fetch_proxies()
+        if new_proxies:
+            PROXIES = new_proxies
+            proxy_ready.set()
+            print(f"Fetched {len(PROXIES)} proxies.")
+        else:
+            if not PROXIES: # If we have none, and failed, still set event to avoid deadlock
+                proxy_ready.set()
+        time.sleep(1800) # Refresh every 30 minutes
 
 # Load sites
 with open("sites.json") as f:
@@ -53,13 +87,15 @@ def ai_or_random_answer(question, context="", options=None):
             else:
                 prompt = f"Context: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words as a random adult."
 
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            # IMPACT: Shared session reduces overhead for repeated API calls.
+            resp = session.post("https://openrouter.ai/api/v1/chat/completions",
                                  headers={"Authorization": f"Bearer {API_KEY}"},
                                  json={"model": "deepseek/deepseek-r1:free",
                                        "messages": [{"role": "user", "content": prompt}],
-                                       "max_tokens": 15}).json()
+                                       "max_tokens": 15},
+                                 timeout=15).json()
             return resp['choices'][0]['message']['content'].strip()
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"Error calling OpenRouter API: {e}")
 
     if options:
@@ -67,16 +103,18 @@ def ai_or_random_answer(question, context="", options=None):
     return random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
 
 def create_temp_email():
-    resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
+    # IMPACT: Shared session for email API calls.
+    resp = session.get("https://api.guerrillamail.com/ajax.php?f=get_email_address", timeout=10)
     data = resp.json()
     return data['email_addr'], data['sid_token'], data['seq']
 
 def fetch_email_code(sid_token, seq):
     time.sleep(5)
-    resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}")
+    # IMPACT: Shared session for repeated email polling.
+    resp = session.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}", timeout=10)
     if resp.json()['list']:
         mail_id = resp.json()['list'][0]['mail_id']
-        fetch_resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}")
+        fetch_resp = session.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}", timeout=10)
         body = fetch_resp.json()['email']['body']
         code = ''.join(c for c in body if c.isdigit())[-6:]
         return code
@@ -123,7 +161,7 @@ def do_tasks(driver, site):
                     input_field = question_element.find_element(By.XPATH, "./following::input[@type='text'] | ./following::textarea")
                     answer = ai_or_random_answer(question_text, context)
                     input_field.send_keys(answer)
-                except:
+                except Exception:
                     try:
                         # Multiple choice
                         option_elements = question_element.find_elements(By.XPATH, "./following::input[@type='radio'] | ./following::input[@type='checkbox']")
@@ -133,7 +171,7 @@ def do_tasks(driver, site):
                             if opt.find_element(By.XPATH, "./following-sibling::label").text == answer:
                                 opt.click()
                                 break
-                    except:
+                    except Exception:
                         try:
                             # Dropdown
                             select = question_element.find_element(By.XPATH, "./following::select")
@@ -144,7 +182,7 @@ def do_tasks(driver, site):
                                 if opt.text == answer:
                                     opt.click()
                                     break
-                        except:
+                        except Exception:
                             pass
                 time.sleep(1)
 
@@ -182,20 +220,30 @@ def auto_payout(driver, site):
 
 class Bot:
     def __init__(self):
-        pass
+        # IMPACT: Initializing UserAgent once and reusing it avoids the overhead
+        # of repeated instantiation and database loading in every thread loop.
+        self.ua = UserAgent()
 
     def run(self):
+        # Wait for initial proxies to be fetched
+        proxy_ready.wait()
+
+        # IMPACT: Adding jitter prevents multiple Chrome instances from launching
+        # simultaneously, reducing CPU/Memory spikes during startup.
+        time.sleep(random.uniform(1, 10))
+
         while True:
+            driver = None
             try:
                 proxy = get_proxy()
-                ua = UserAgent()
                 options = Options()
                 options.add_argument('--headless')
                 options.add_argument('--no-sandbox')
                 options.add_argument('--disable-dev-shm-usage')
                 options.add_argument('--disable-gpu')
-                options.add_argument(f'--user-agent={ua.random}')
-                if proxy: options.add_argument(f'--proxy-server={proxy}')
+                options.add_argument(f'--user-agent={self.ua.random}')
+                if proxy:
+                    options.add_argument(f'--proxy-server={proxy}')
                 service = Service('/usr/bin/chromedriver')  # Explicit path in Selenium image
                 driver = webdriver.Chrome(service=service, options=options)
 
@@ -207,17 +255,26 @@ class Bot:
                     print(f"Completed {tasks} tasks on {site}")
                     auto_payout(driver, site)
 
-                driver.quit()
             except Exception as e:
                 print("Error:", e)
+            finally:
+                # IMPACT: Using finally ensures the driver is always quit,
+                # preventing memory leaks from orphan Chrome processes.
+                if driver:
+                    driver.quit()
             
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        # Start proxy refresh thread
+        threading.Thread(target=background_proxy_refresh, daemon=True).start()
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # IMPACT: Reduced startup delay from 10s to 1s. Combined with jitter
+            # in Bot.run, this speeds up total startup time by ~90%.
+            time.sleep(1)
 
         while True:
             time.sleep(3600)
