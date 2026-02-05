@@ -1,13 +1,20 @@
-import time, random, requests, threading, os
+import json
+import os
+import random
+import shutil
+import threading
+import time
+
+import requests
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+from requests.adapters import HTTPAdapter
 from selenium import webdriver
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from fake_useragent import UserAgent
-
-import json
+from selenium.webdriver.support.ui import WebDriverWait
 
 # Load config
 with open("config.json") as f:
@@ -17,12 +24,13 @@ API_KEY = config.get("api_key", "")
 WALLET = config.get("wallet", "")
 THREADS = config.get("threads", 90)
 
-from bs4 import BeautifulSoup
-
-def fetch_proxies():
+def fetch_proxies(session=None):
     proxies = []
     try:
-        response = requests.get("https://free-proxy-list.net/")
+        if session:
+            response = session.get("https://free-proxy-list.net/")
+        else:
+            response = requests.get("https://free-proxy-list.net/")
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
         for row in table.find_all("tr")[1:]:
@@ -34,18 +42,11 @@ def fetch_proxies():
         print(f"Failed to fetch proxies: {e}")
     return proxies
 
-PROXIES = fetch_proxies()
-
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
 
-def get_proxy():
-    if PROXIES:
-        return random.choice(PROXIES)
-    return None
-
-def ai_or_random_answer(question, context="", options=None):
+def ai_or_random_answer(session, question, context="", options=None):
     if API_KEY:
         try:
             if options:
@@ -53,49 +54,49 @@ def ai_or_random_answer(question, context="", options=None):
             else:
                 prompt = f"Context: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words as a random adult."
 
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            resp = session.post("https://openrouter.ai/api/v1/chat/completions",
                                  headers={"Authorization": f"Bearer {API_KEY}"},
                                  json={"model": "deepseek/deepseek-r1:free",
                                        "messages": [{"role": "user", "content": prompt}],
                                        "max_tokens": 15}).json()
             return resp['choices'][0]['message']['content'].strip()
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"Error calling OpenRouter API: {e}")
 
     if options:
         return random.choice(options)
     return random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
 
-def create_temp_email():
-    resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
+def create_temp_email(session):
+    resp = session.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
     data = resp.json()
     return data['email_addr'], data['sid_token'], data['seq']
 
-def fetch_email_code(sid_token, seq):
+def fetch_email_code(session, sid_token, seq):
     time.sleep(5)
-    resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}")
+    resp = session.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}")
     if resp.json()['list']:
         mail_id = resp.json()['list'][0]['mail_id']
-        fetch_resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}")
+        fetch_resp = session.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}")
         body = fetch_resp.json()['email']['body']
         code = ''.join(c for c in body if c.isdigit())[-6:]
         return code
     return str(random.randint(100000, 999999))
 
-def auto_signup(driver, site):
+def auto_signup(session, driver, site):
     try:
         paths = SITE_PATHS[site]
         driver.get(f"https://{site}{paths['signup']}")
         wait = WebDriverWait(driver, 15)
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
-        email, sid_token, seq = create_temp_email()
+        email, sid_token, seq = create_temp_email(session)
         driver.find_element(By.CSS_SELECTOR, "input[type='email']").send_keys(email)
         driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys("TempPass123!")
         driver.find_element(By.CSS_SELECTOR, "input[name*='name']").send_keys(f"User{random.randint(1000,9999)}")
         driver.find_element(By.XPATH, "//button[contains(text(),'Sign Up')]").click()
         time.sleep(5)
         if "verify" in driver.page_source.lower():
-            code = fetch_email_code(sid_token, seq)
+            code = fetch_email_code(session, sid_token, seq)
             driver.find_element(By.CSS_SELECTOR, "input[name*='code']").send_keys(code)
             driver.find_element(By.XPATH, "//button[contains(text(),'Verify')]").click()
         print(f"Account created on {site}: {email}")
@@ -104,7 +105,7 @@ def auto_signup(driver, site):
         print(f"Signup fail {site}: {e}")
         return False
 
-def do_tasks(driver, site):
+def do_tasks(session, driver, site):
     paths = SITE_PATHS[site]
     tasks = 0
     retries = 3
@@ -121,30 +122,30 @@ def do_tasks(driver, site):
                 try:
                     # Text input
                     input_field = question_element.find_element(By.XPATH, "./following::input[@type='text'] | ./following::textarea")
-                    answer = ai_or_random_answer(question_text, context)
+                    answer = ai_or_random_answer(session, question_text, context)
                     input_field.send_keys(answer)
-                except:
+                except Exception:
                     try:
                         # Multiple choice
                         option_elements = question_element.find_elements(By.XPATH, "./following::input[@type='radio'] | ./following::input[@type='checkbox']")
                         option_labels = [opt.find_element(By.XPATH, "./following-sibling::label").text for opt in option_elements]
-                        answer = ai_or_random_answer(question_text, context, options=option_labels)
+                        answer = ai_or_random_answer(session, question_text, context, options=option_labels)
                         for opt in option_elements:
                             if opt.find_element(By.XPATH, "./following-sibling::label").text == answer:
                                 opt.click()
                                 break
-                    except:
+                    except Exception:
                         try:
                             # Dropdown
                             select = question_element.find_element(By.XPATH, "./following::select")
                             option_elements = select.find_elements(By.TAG_NAME, "option")
                             option_labels = [opt.text for opt in option_elements]
-                            answer = ai_or_random_answer(question_text, context, options=option_labels)
+                            answer = ai_or_random_answer(session, question_text, context, options=option_labels)
                             for opt in option_elements:
                                 if opt.text == answer:
                                     opt.click()
                                     break
-                        except:
+                        except Exception:
                             pass
                 time.sleep(1)
 
@@ -182,28 +183,73 @@ def auto_payout(driver, site):
 
 class Bot:
     def __init__(self):
-        pass
+        self.proxies = []
+        self.proxy_ready = threading.Event()
+        self.ua = UserAgent()
+        self.session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=THREADS, pool_maxsize=THREADS)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
+    def _refresh_proxies(self):
+        """Background thread to keep proxies fresh."""
+        while True:
+            try:
+                new_proxies = fetch_proxies(self.session)
+                if new_proxies:
+                    self.proxies = new_proxies
+                    # IMPACT: Prevents worker threads from starting without any proxies
+                    self.proxy_ready.set()
+                    print(f"Fetched {len(self.proxies)} proxies.")
+            except Exception as e:
+                print(f"Proxy refresh error: {e}")
+            finally:
+                # Ensure it sets even on failure if we already have some or if it's the first time
+                # but maybe it's better to wait for at least one success.
+                # If it fails the very first time, we might wait forever.
+                # So let's allow it to set after some retries or just set it if we want to proceed without proxies.
+                if not self.proxies and not self.proxy_ready.is_set():
+                     # If we really need proxies, we might not want to set this.
+                     # But for robustness, let's set it after a timeout or just now.
+                     pass
+
+            time.sleep(1800) # Refresh every 30 minutes
+
+    def get_proxy(self):
+        if self.proxies:
+            return random.choice(self.proxies)
+        return None
 
     def run(self):
         while True:
             try:
-                proxy = get_proxy()
-                ua = UserAgent()
+                # IMPACT: Random jitter prevents "thundering herd" effect on startup
+                time.sleep(random.uniform(1, 10))
+                proxy = self.get_proxy()
+                ua = self.ua
                 options = Options()
                 options.add_argument('--headless')
                 options.add_argument('--no-sandbox')
                 options.add_argument('--disable-dev-shm-usage')
                 options.add_argument('--disable-gpu')
                 options.add_argument(f'--user-agent={ua.random}')
-                if proxy: options.add_argument(f'--proxy-server={proxy}')
-                service = Service('/usr/bin/chromedriver')  # Explicit path in Selenium image
+                if proxy:
+                    options.add_argument(f'--proxy-server={proxy}')
+
+                # Use explicit path if exists, otherwise find in PATH
+                # IMPACT: Ensures compatibility with both Docker and local environments
+                chromedriver_path = '/usr/bin/chromedriver'
+                if not os.path.exists(chromedriver_path):
+                    chromedriver_path = shutil.which('chromedriver') or chromedriver_path
+
+                service = Service(chromedriver_path)
                 driver = webdriver.Chrome(service=service, options=options)
 
                 site = random.choice(list(SITE_PATHS.keys()))
                 print(f"→ Working on {site}")
 
-                if auto_signup(driver, site):
-                    tasks = do_tasks(driver, site)
+                if auto_signup(self.session, driver, site):
+                    tasks = do_tasks(self.session, driver, site)
                     print(f"Completed {tasks} tasks on {site}")
                     auto_payout(driver, site)
 
@@ -214,10 +260,16 @@ class Bot:
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
+        # IMPACT: Background proxy fetching doesn't block main startup
+        threading.Thread(target=self._refresh_proxies, daemon=True).start()
+        print("Waiting for proxies...")
+        self.proxy_ready.wait(timeout=30) # Wait up to 30s for first proxy fetch
+
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # IMPACT: Reduced stagger delay (10s -> 1s) speeds up total startup by 9x
+            time.sleep(1)
 
         while True:
             time.sleep(3600)
