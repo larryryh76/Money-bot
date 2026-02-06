@@ -1,4 +1,9 @@
-import time, random, requests, threading, os
+import time
+import random
+import requests
+import threading
+from requests.adapters import HTTPAdapter
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -17,14 +22,21 @@ API_KEY = config.get("api_key", "")
 WALLET = config.get("wallet", "")
 THREADS = config.get("threads", 90)
 
-from bs4 import BeautifulSoup
+# IMPACT: Use connection pooling to reduce TCP/TLS handshake overhead
+session = requests.Session()
+adapter = HTTPAdapter(pool_connections=THREADS, pool_maxsize=THREADS)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
 
-def fetch_proxies():
+
+def fetch_proxies(session=session):
     proxies = []
     try:
-        response = requests.get("https://free-proxy-list.net/")
+        response = session.get("https://free-proxy-list.net/", timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+        table = soup.find(
+            "table", attrs={"class": "table table-striped table-bordered"}
+        )
         for row in table.find_all("tr")[1:]:
             tds = row.find_all("td")
             ip = tds[0].text.strip()
@@ -34,18 +46,48 @@ def fetch_proxies():
         print(f"Failed to fetch proxies: {e}")
     return proxies
 
-PROXIES = fetch_proxies()
+
+PROXIES = []
+proxies_ready = threading.Event()
+
+
+def proxy_refresher():
+    """IMPACT: Refresh proxies in the background to avoid blocking worker threads."""
+    global PROXIES
+    while True:
+        try:
+            new_proxies = fetch_proxies()
+            if new_proxies:
+                PROXIES = new_proxies
+                proxies_ready.set()
+                print(f"Background proxy refresh: {len(PROXIES)} proxies available.")
+        except Exception as e:
+            print(f"Proxy refresh failed: {e}")
+        finally:
+            # Ensure threads can eventually start even if initial fetch fails
+            if not PROXIES:
+                print("Warning: No proxies available yet. Retrying in 60s...")
+                time.sleep(60)
+                continue
+            proxies_ready.set()
+        time.sleep(1800)  # Refresh every 30 minutes
+
+
+# Start background proxy refreshing
+threading.Thread(target=proxy_refresher, daemon=True).start()
 
 # Load sites
 with open("sites.json") as f:
     SITE_PATHS = json.load(f)
+
 
 def get_proxy():
     if PROXIES:
         return random.choice(PROXIES)
     return None
 
-def ai_or_random_answer(question, context="", options=None):
+
+def ai_or_random_answer(question, context="", options=None, session=session):
     if API_KEY:
         try:
             if options:
@@ -53,12 +95,17 @@ def ai_or_random_answer(question, context="", options=None):
             else:
                 prompt = f"Context: {context}\n\nQuestion: {question}\n\nAnswer in 1-5 words as a random adult."
 
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                                 headers={"Authorization": f"Bearer {API_KEY}"},
-                                 json={"model": "deepseek/deepseek-r1:free",
-                                       "messages": [{"role": "user", "content": prompt}],
-                                       "max_tokens": 15}).json()
-            return resp['choices'][0]['message']['content'].strip()
+            resp = session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {API_KEY}"},
+                json={
+                    "model": "deepseek/deepseek-r1:free",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 15,
+                },
+                timeout=15,
+            ).json()
+            return resp["choices"][0]["message"]["content"].strip()
         except requests.exceptions.RequestException as e:
             print(f"Error calling OpenRouter API: {e}")
 
@@ -66,32 +113,49 @@ def ai_or_random_answer(question, context="", options=None):
         return random.choice(options)
     return random.choice(["Yes", "No", "Sometimes", "Once a week", "Agree"])
 
-def create_temp_email():
-    resp = requests.get("https://api.guerrillamail.com/ajax.php?f=get_email_address")
-    data = resp.json()
-    return data['email_addr'], data['sid_token'], data['seq']
 
-def fetch_email_code(sid_token, seq):
+def create_temp_email(session=session):
+    resp = session.get(
+        "https://api.guerrillamail.com/ajax.php?f=get_email_address", timeout=10
+    )
+    data = resp.json()
+    return data["email_addr"], data["sid_token"], data["seq"]
+
+
+def fetch_email_code(sid_token, seq, session=session):
     time.sleep(5)
-    resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}")
-    if resp.json()['list']:
-        mail_id = resp.json()['list'][0]['mail_id']
-        fetch_resp = requests.get(f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}")
-        body = fetch_resp.json()['email']['body']
-        code = ''.join(c for c in body if c.isdigit())[-6:]
+    resp = session.get(
+        f"https://api.guerrillamail.com/ajax.php?f=check_email&seq={seq}&sid_token={sid_token}",
+        timeout=10,
+    )
+    if resp.json()["list"]:
+        mail_id = resp.json()["list"][0]["mail_id"]
+        fetch_resp = session.get(
+            f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={mail_id}&sid_token={sid_token}",
+            timeout=10,
+        )
+        body = fetch_resp.json()["email"]["body"]
+        code = "".join(c for c in body if c.isdigit())[-6:]
         return code
     return str(random.randint(100000, 999999))
+
 
 def auto_signup(driver, site):
     try:
         paths = SITE_PATHS[site]
         driver.get(f"https://{site}{paths['signup']}")
         wait = WebDriverWait(driver, 15)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
+        wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']"))
+        )
         email, sid_token, seq = create_temp_email()
         driver.find_element(By.CSS_SELECTOR, "input[type='email']").send_keys(email)
-        driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys("TempPass123!")
-        driver.find_element(By.CSS_SELECTOR, "input[name*='name']").send_keys(f"User{random.randint(1000,9999)}")
+        driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys(
+            "TempPass123!"
+        )
+        driver.find_element(By.CSS_SELECTOR, "input[name*='name']").send_keys(
+            f"User{random.randint(1000, 9999)}"
+        )
         driver.find_element(By.XPATH, "//button[contains(text(),'Sign Up')]").click()
         time.sleep(5)
         if "verify" in driver.page_source.lower():
@@ -104,6 +168,7 @@ def auto_signup(driver, site):
         print(f"Signup fail {site}: {e}")
         return False
 
+
 def do_tasks(driver, site):
     paths = SITE_PATHS[site]
     tasks = 0
@@ -112,7 +177,9 @@ def do_tasks(driver, site):
     time.sleep(10)
     for _ in range(5):
         try:
-            question_element = driver.find_element(By.CSS_SELECTOR, "label, span, p, h1, h2, h3")
+            question_element = driver.find_element(
+                By.CSS_SELECTOR, "label, span, p, h1, h2, h3"
+            )
             question_text = question_element.text
             if question_text:
                 context = driver.page_source
@@ -120,39 +187,66 @@ def do_tasks(driver, site):
                 # Check for different input types near the question
                 try:
                     # Text input
-                    input_field = question_element.find_element(By.XPATH, "./following::input[@type='text'] | ./following::textarea")
+                    input_field = question_element.find_element(
+                        By.XPATH,
+                        "./following::input[@type='text'] | ./following::textarea",
+                    )
                     answer = ai_or_random_answer(question_text, context)
                     input_field.send_keys(answer)
-                except:
+                except Exception:
                     try:
                         # Multiple choice
-                        option_elements = question_element.find_elements(By.XPATH, "./following::input[@type='radio'] | ./following::input[@type='checkbox']")
-                        option_labels = [opt.find_element(By.XPATH, "./following-sibling::label").text for opt in option_elements]
-                        answer = ai_or_random_answer(question_text, context, options=option_labels)
+                        option_elements = question_element.find_elements(
+                            By.XPATH,
+                            "./following::input[@type='radio'] | ./following::input[@type='checkbox']",
+                        )
+                        option_labels = [
+                            opt.find_element(
+                                By.XPATH, "./following-sibling::label"
+                            ).text
+                            for opt in option_elements
+                        ]
+                        answer = ai_or_random_answer(
+                            question_text, context, options=option_labels
+                        )
                         for opt in option_elements:
-                            if opt.find_element(By.XPATH, "./following-sibling::label").text == answer:
+                            if (
+                                opt.find_element(
+                                    By.XPATH, "./following-sibling::label"
+                                ).text
+                                == answer
+                            ):
                                 opt.click()
                                 break
-                    except:
+                    except Exception:
                         try:
                             # Dropdown
-                            select = question_element.find_element(By.XPATH, "./following::select")
-                            option_elements = select.find_elements(By.TAG_NAME, "option")
+                            select = question_element.find_element(
+                                By.XPATH, "./following::select"
+                            )
+                            option_elements = select.find_elements(
+                                By.TAG_NAME, "option"
+                            )
                             option_labels = [opt.text for opt in option_elements]
-                            answer = ai_or_random_answer(question_text, context, options=option_labels)
+                            answer = ai_or_random_answer(
+                                question_text, context, options=option_labels
+                            )
                             for opt in option_elements:
                                 if opt.text == answer:
                                     opt.click()
                                     break
-                        except:
+                        except Exception:
                             pass
                 time.sleep(1)
 
-            btn = driver.find_element(By.XPATH, "//button[contains(text(),'Start') or contains(text(),'Next') or contains(text(),'Play')] | //a[contains(@href,'offer')]")
+            btn = driver.find_element(
+                By.XPATH,
+                "//button[contains(text(),'Start') or contains(text(),'Next') or contains(text(),'Play')] | //a[contains(@href,'offer')]",
+            )
             btn.click()
             time.sleep(random.uniform(10, 25))
             tasks += 1
-            retries = 3 # Reset retries after a successful task
+            retries = 3  # Reset retries after a successful task
         except Exception as e:
             print(f"Error in do_tasks: {e}")
             retries -= 1
@@ -160,19 +254,32 @@ def do_tasks(driver, site):
                 break
     return tasks
 
+
 def auto_payout(driver, site):
     paths = SITE_PATHS[site]
-    min_bal = paths['min']
+    min_bal = paths["min"]
     driver.get(f"https://{site}{paths['withdraw']}")
     time.sleep(10)
     try:
-        balance_str = driver.find_element(By.CSS_SELECTOR, ".balance, [class*='balance']").text.replace("$", "").strip()
+        balance_str = (
+            driver.find_element(By.CSS_SELECTOR, ".balance, [class*='balance']")
+            .text.replace("$", "")
+            .strip()
+        )
         balance = float(balance_str) if balance_str.replace(".", "").isdigit() else 0
         if balance >= min_bal:
-            driver.find_element(By.XPATH, "//button[contains(text(),'Crypto') or contains(text(),'BTC') or contains(text(),'Cash Out')]").click()
+            driver.find_element(
+                By.XPATH,
+                "//button[contains(text(),'Crypto') or contains(text(),'BTC') or contains(text(),'Cash Out')]",
+            ).click()
             time.sleep(3)
-            driver.find_element(By.CSS_SELECTOR, "input[placeholder*='address']").send_keys(WALLET)
-            driver.find_element(By.XPATH, "//button[contains(text(),'Withdraw') or contains(text(),'Confirm')]").click()
+            driver.find_element(
+                By.CSS_SELECTOR, "input[placeholder*='address']"
+            ).send_keys(WALLET)
+            driver.find_element(
+                By.XPATH,
+                "//button[contains(text(),'Withdraw') or contains(text(),'Confirm')]",
+            ).click()
             print(f"Payout ${balance} from {site} to {WALLET}")
             return True
         print(f"${balance} < ${min_bal} on {site}")
@@ -180,47 +287,60 @@ def auto_payout(driver, site):
         print(f"Payout error {site}: {e}")
     return False
 
+
 class Bot:
     def __init__(self):
-        pass
+        # IMPACT: Reuse UserAgent instance to save memory and CPU
+        self.ua = UserAgent()
 
     def run(self):
+        # IMPACT: Wait for initial proxy list without blocking main thread startup
+        proxies_ready.wait()
+        # IMPACT: Stagger worker start with jitter to prevent CPU spikes
+        time.sleep(random.uniform(1, 10))
         while True:
             try:
                 proxy = get_proxy()
-                ua = UserAgent()
                 options = Options()
-                options.add_argument('--headless')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument('--disable-gpu')
-                options.add_argument(f'--user-agent={ua.random}')
-                if proxy: options.add_argument(f'--proxy-server={proxy}')
-                service = Service('/usr/bin/chromedriver')  # Explicit path in Selenium image
-                driver = webdriver.Chrome(service=service, options=options)
+                options.add_argument("--headless")
+                options.add_argument("--no-sandbox")
+                options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("--disable-gpu")
+                options.add_argument(f"--user-agent={self.ua.random}")
+                if proxy:
+                    options.add_argument(f"--proxy-server={proxy}")
+                # IMPACT: Use automatic driver management if explicit path is missing
+                try:
+                    service = Service("/usr/bin/chromedriver")
+                    driver = webdriver.Chrome(service=service, options=options)
+                except Exception:
+                    driver = webdriver.Chrome(options=options)
+                # IMPACT: Use try...finally to ensure driver.quit() is always called, preventing memory leaks
+                try:
+                    site = random.choice(list(SITE_PATHS.keys()))
+                    print(f"→ Working on {site}")
 
-                site = random.choice(list(SITE_PATHS.keys()))
-                print(f"→ Working on {site}")
-
-                if auto_signup(driver, site):
-                    tasks = do_tasks(driver, site)
-                    print(f"Completed {tasks} tasks on {site}")
-                    auto_payout(driver, site)
-
-                driver.quit()
+                    if auto_signup(driver, site):
+                        tasks = do_tasks(driver, site)
+                        print(f"Completed {tasks} tasks on {site}")
+                        auto_payout(driver, site)
+                finally:
+                    driver.quit()
             except Exception as e:
                 print("Error:", e)
-            
+
             time.sleep(random.randint(1800, 3600))
 
     def start(self):
         print(f"Starting {THREADS} accounts...")
         for i in range(THREADS):
             threading.Thread(target=self.run, daemon=True).start()
-            time.sleep(10)
+            # IMPACT: Faster startup with 1s staggered delay instead of 10s
+            time.sleep(1)
 
         while True:
             time.sleep(3600)
+
 
 if __name__ == "__main__":
     bot = Bot()
