@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bot Status Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-6">
+  <div class="max-w-4xl mx-auto space-y-6">
+    <!-- Header -->
+    <div class="flex justify-between items-center border-b border-gray-800 pb-4">
+      <h1 class="text-2xl font-bold tracking-wide text-blue-400">Bot Command Dashboard</h1>
+      <span id="lastUpdated" class="text-xs text-gray-500">Updating...</span>
+    </div>
+
+    <!-- Metric Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+        <p class="text-sm text-gray-400">Bot Status</p>
+        <p id="botStatus" class="text-2xl font-bold mt-1 text-yellow-400">Loading...</p>
+      </div>
+      <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+        <p class="text-sm text-gray-400">Tasks Completed Today</p>
+        <p id="tasksToday" class="text-2xl font-bold mt-1 text-green-400">--</p>
+      </div>
+      <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+        <p class="text-sm text-gray-400">Total Points Earned</p>
+        <p id="totalPoints" class="text-2xl font-bold mt-1 text-purple-400">--</p>
+      </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+      <h2 class="text-lg font-semibold text-gray-200 mb-4">Recent Activity Log</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm text-gray-300">
+          <thead class="bg-gray-700/50 text-gray-400 uppercase text-xs">
+            <tr>
+              <th class="p-3">Time</th>
+              <th class="p-3">Action</th>
+              <th class="p-3 text-right">Result</th>
+            </tr>
+          </thead>
+          <tbody id="activityTable" class="divide-y divide-gray-700">
+            <tr>
+              <td colspan="3" class="p-4 text-center text-gray-500">Loading activity log...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function fetchStatus() {
+      try {
+        const response = await fetch('/api/status');
+        const data = await response.json();
+
+        // Update Status
+        const statusEl = document.getElementById('botStatus');
+        statusEl.textContent = data.status;
+        if (data.status === 'Running') {
+          statusEl.className = 'text-2xl font-bold mt-1 text-green-400';
+        } else if (data.status === 'Idle') {
+          statusEl.className = 'text-2xl font-bold mt-1 text-yellow-400';
+        } else {
+          statusEl.className = 'text-2xl font-bold mt-1 text-red-400';
+        }
+
+        // Update Metrics
+        document.getElementById('tasksToday').textContent = data.tasksCompletedToday;
+        document.getElementById('totalPoints').textContent = data.totalPointsEarned.toLocaleString();
+
+        // Update Table
+        const tbody = document.getElementById('activityTable');
+        tbody.innerHTML = '';
+        data.recentActivity.forEach(item => {
+          const row = document.createElement('tr');
+          row.className = 'hover:bg-gray-750 transition-colors';
+          row.innerHTML = `
+            <td class="p-3 font-mono text-xs text-gray-400">${item.time}</td>
+            <td class="p-3">${item.action}</td>
+            <td class="p-3 text-right font-medium text-blue-300">${item.reward}</td>
+          `;
+          tbody.appendChild(row);
+        });
+
+        document.getElementById('lastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+      } catch (err) {
+        console.error('Failed to fetch status:', err);
+        document.getElementById('botStatus').textContent = 'Error';
+        document.getElementById('botStatus').className = 'text-2xl font-bold mt-1 text-red-400';
+      }
+    }
+
+    // Initial Fetch & Auto-refresh every 30 seconds
+    fetchStatus();
+    setInterval(fetchStatus, 30000);
+  </script>
+</body>
+</html>
