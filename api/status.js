@@ -1,19 +1,41 @@
-module.exports = (req, res) => {
+let currentState = {
+  status: "Idle",
+  tasksCompleted: 0,
+  pointsEarned: 0,
+  recentActivity: []
+};
+
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Content-Type', 'application/json');
 
-  const mockData = {
-    status: "Running",
-    tasksCompletedToday: 42,
-    totalPointsEarned: 1250,
-    recentActivity: [
-      { id: 1, time: "10:45 AM", action: "Completed survey on freecash.com", reward: "+150 pts" },
-      { id: 2, time: "10:30 AM", action: "Completed offer on lootably.com", reward: "+300 pts" },
-      { id: 3, time: "10:15 AM", action: "Logged in to surveytime.io", reward: "Status OK" },
-      { id: 4, time: "10:00 AM", action: "Auto-payout executed on Cointiply", reward: "$3.50 BTC" },
-      { id: 5, time: "09:45 AM", action: "Cleared cookies and rotated proxy", reward: "Success" }
-    ]
-  };
+  if (req.method === 'GET') {
+    return res.status(200).json(currentState);
+  }
 
-  res.status(200).json(mockData);
+  if (req.method === 'POST') {
+    const apiKey = process.env.STATUS_API_KEY;
+    if (apiKey) {
+      const clientKey = req.headers['x-api-key'];
+      if (clientKey !== apiKey) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    }
+
+    const { status, tasksCompleted, pointsEarned, activity } = req.body || {};
+
+    if (status) currentState.status = status;
+    if (typeof tasksCompleted === 'number') currentState.tasksCompleted = tasksCompleted;
+    if (typeof pointsEarned === 'number') currentState.pointsEarned = pointsEarned;
+
+    if (activity) {
+      currentState.recentActivity.unshift(activity);
+      if (currentState.recentActivity.length > 5) {
+        currentState.recentActivity = currentState.recentActivity.slice(0, 5);
+      }
+    }
+
+    return res.status(200).json({ success: true, state: currentState });
+  }
+
+  return res.status(405).json({ error: 'Method Not Allowed' });
 };

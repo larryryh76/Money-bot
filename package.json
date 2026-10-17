@@ -1,0 +1,7 @@
+{
+  "name": "money-bot-dashboard",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}
