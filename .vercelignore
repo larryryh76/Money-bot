@@ -1,0 +1,7 @@
+src/
+tests/
+.github/
+*.py
+requirements.txt
+__pycache__/
+*.pyc

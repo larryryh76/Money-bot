@@ -6,98 +6,110 @@
   <title>Bot Status Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen p-6">
+<body class="bg-gray-950 text-gray-100 min-h-screen p-4 md:p-8">
   <div class="max-w-4xl mx-auto space-y-6">
     <!-- Header -->
-    <div class="flex justify-between items-center border-b border-gray-800 pb-4">
-      <h1 class="text-2xl font-bold tracking-wide text-blue-400">Bot Command Dashboard</h1>
-      <span id="lastUpdated" class="text-xs text-gray-500">Updating...</span>
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between border-b border-gray-800 pb-4 gap-2">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-white">Bot Status Dashboard</h1>
+        <p class="text-xs text-gray-400 mt-0.5">Real-time automation telemetry</p>
+      </div>
+      <div class="text-left sm:text-right">
+        <div id="lastUpdated" class="text-xs font-mono text-gray-400">Updating...</div>
+        <div class="text-[11px] text-gray-500">Auto-refresh every 30s</div>
+      </div>
     </div>
 
-    <!-- Metric Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
-        <p class="text-sm text-gray-400">Bot Status</p>
-        <p id="botStatus" class="text-2xl font-bold mt-1 text-yellow-400">Loading...</p>
+    <!-- Cards Row -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <!-- Status Card -->
+      <div class="bg-gray-900 p-5 rounded-xl border border-gray-800 flex flex-col justify-between">
+        <span class="text-xs font-medium uppercase tracking-wider text-gray-400">Bot Status</span>
+        <div class="mt-3 flex items-center gap-2">
+          <span id="statusBadge" class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-gray-800 text-gray-300">
+            <span id="statusDot" class="w-2 h-2 rounded-full bg-gray-500 mr-2"></span>
+            <span id="statusText">Loading...</span>
+          </span>
+        </div>
       </div>
-      <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
-        <p class="text-sm text-gray-400">Tasks Completed Today</p>
-        <p id="tasksToday" class="text-2xl font-bold mt-1 text-green-400">--</p>
+
+      <!-- Tasks Completed -->
+      <div class="bg-gray-900 p-5 rounded-xl border border-gray-800">
+        <span class="text-xs font-medium uppercase tracking-wider text-gray-400">Tasks Completed Today</span>
+        <p id="tasksCompleted" class="text-3xl font-extrabold mt-2 text-white">0</p>
       </div>
-      <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
-        <p class="text-sm text-gray-400">Total Points Earned</p>
-        <p id="totalPoints" class="text-2xl font-bold mt-1 text-purple-400">--</p>
+
+      <!-- Points Earned -->
+      <div class="bg-gray-900 p-5 rounded-xl border border-gray-800">
+        <span class="text-xs font-medium uppercase tracking-wider text-gray-400">Total Points Earned</span>
+        <p id="pointsEarned" class="text-3xl font-extrabold mt-2 text-emerald-400">0</p>
       </div>
     </div>
 
     <!-- Recent Activity -->
-    <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
-      <h2 class="text-lg font-semibold text-gray-200 mb-4">Recent Activity Log</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-sm text-gray-300">
-          <thead class="bg-gray-700/50 text-gray-400 uppercase text-xs">
-            <tr>
-              <th class="p-3">Time</th>
-              <th class="p-3">Action</th>
-              <th class="p-3 text-right">Result</th>
-            </tr>
-          </thead>
-          <tbody id="activityTable" class="divide-y divide-gray-700">
-            <tr>
-              <td colspan="3" class="p-4 text-center text-gray-500">Loading activity log...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="bg-gray-900 p-6 rounded-xl border border-gray-800 space-y-4">
+      <h2 class="text-base font-semibold text-white">Recent Activity (Last 5)</h2>
+      <ul id="activityList" class="space-y-2 font-mono text-sm">
+        <li class="p-3 bg-gray-950 rounded-lg text-gray-500 text-center text-xs">No recent activity recorded.</li>
+      </ul>
     </div>
   </div>
 
   <script>
-    async function fetchStatus() {
+    async function updateDashboard() {
       try {
-        const response = await fetch('/api/status');
-        const data = await response.json();
+        const res = await fetch('/api/status');
+        const data = await res.json();
 
-        // Update Status
-        const statusEl = document.getElementById('botStatus');
-        statusEl.textContent = data.status;
-        if (data.status === 'Running') {
-          statusEl.className = 'text-2xl font-bold mt-1 text-green-400';
-        } else if (data.status === 'Idle') {
-          statusEl.className = 'text-2xl font-bold mt-1 text-yellow-400';
+        // Update Status Badge
+        const badge = document.getElementById('statusBadge');
+        const dot = document.getElementById('statusDot');
+        const text = document.getElementById('statusText');
+        const status = data.status || 'Idle';
+
+        text.textContent = status;
+
+        if (status.toLowerCase() === 'running') {
+          badge.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950 text-emerald-300 border border-emerald-800';
+          dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
+        } else if (status.toLowerCase() === 'idle') {
+          badge.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-amber-950 text-amber-300 border border-amber-800';
+          dot.className = 'w-2 h-2 rounded-full bg-amber-400 mr-2';
         } else {
-          statusEl.className = 'text-2xl font-bold mt-1 text-red-400';
+          badge.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-rose-950 text-rose-300 border border-rose-800';
+          dot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
         }
 
-        // Update Metrics
-        document.getElementById('tasksToday').textContent = data.tasksCompletedToday;
-        document.getElementById('totalPoints').textContent = data.totalPointsEarned.toLocaleString();
+        // Metrics
+        document.getElementById('tasksCompleted').textContent = data.tasksCompleted ?? 0;
+        document.getElementById('pointsEarned').textContent = (data.pointsEarned ?? 0).toLocaleString();
 
-        // Update Table
-        const tbody = document.getElementById('activityTable');
-        tbody.innerHTML = '';
-        data.recentActivity.forEach(item => {
-          const row = document.createElement('tr');
-          row.className = 'hover:bg-gray-750 transition-colors';
-          row.innerHTML = `
-            <td class="p-3 font-mono text-xs text-gray-400">${item.time}</td>
-            <td class="p-3">${item.action}</td>
-            <td class="p-3 text-right font-medium text-blue-300">${item.reward}</td>
-          `;
-          tbody.appendChild(row);
-        });
+        // Activity List
+        const list = document.getElementById('activityList');
+        list.innerHTML = '';
+        const activities = data.recentActivity || [];
+
+        if (activities.length === 0) {
+          list.innerHTML = '<li class="p-3 bg-gray-950 rounded-lg text-gray-500 text-center text-xs">No recent activity recorded.</li>';
+        } else {
+          activities.slice(0, 5).forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'p-3 bg-gray-950 rounded-lg border border-gray-800/60 flex justify-between items-center text-xs text-gray-300';
+            const action = typeof item === 'string' ? item : (item.action || JSON.stringify(item));
+            const time = (typeof item === 'object' && item.time) ? item.time : new Date().toLocaleTimeString();
+            li.innerHTML = `<span>${action}</span><span class="text-gray-500 font-sans">${time}</span>`;
+            list.appendChild(li);
+          });
+        }
 
         document.getElementById('lastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
-      } catch (err) {
-        console.error('Failed to fetch status:', err);
-        document.getElementById('botStatus').textContent = 'Error';
-        document.getElementById('botStatus').className = 'text-2xl font-bold mt-1 text-red-400';
+      } catch (e) {
+        console.error('Error fetching bot status:', e);
       }
     }
 
-    // Initial Fetch & Auto-refresh every 30 seconds
-    fetchStatus();
-    setInterval(fetchStatus, 30000);
+    updateDashboard();
+    setInterval(updateDashboard, 30000);
   </script>
 </body>
 </html>
